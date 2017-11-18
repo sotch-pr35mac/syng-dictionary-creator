@@ -65,6 +65,9 @@ fn main() {
                     let pinyin_regex = Regex::new(r"\d|\s").unwrap();
                     let searchable_pinyin: String = pinyin_regex.split(&pronunciation).filter(|&x| x != "").collect::<String>().to_lowercase();
 
+                    let pinyin_tones_regex = Regex::new(r"\s").unwrap();
+                    let searchable_pinyin_tones: String = pinyin_tones_regex.split(&pronunciation).filter(|&x| x != "").collect::<String>().to_lowercase();
+
                     // Process English
                     let mut searchable_english: Vec<String> = Vec::new();
 
@@ -82,6 +85,7 @@ fn main() {
                         "definitions": definitions,
                         "toneMarks": tone_marks,
                         "searchablePinyin": searchable_pinyin,
+                        "searchablePinyinTones": searchable_pinyin_tones,
                         "searchableEnglish": searchable_english
                     });
 

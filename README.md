@@ -10,15 +10,19 @@ This file takes the CC-CEDICT file and generates a json file with the appropriat
 The resulting JSON file will have the words from the CC-CEDICT file in the following format:
 ```json
 {
-    "traditional": "String", // 你好
-    "simplified": "String", // 你好
-    "pronunciation": "String", // ni3 hao3
-    "definitions": "Array(String)", // ["Hi!", "Hello!", "How are you?"]
-    "toneMarks": "Array(Number)", // [3, 3]
-    "searchablePinyin": "String", // nihao
-    "searchableEnglish": "Array(String)" // ["hi", "hello", "howareyou"]
+    "traditional": "你好",
+    "simplified": "你好",
+    "pronunciation": "ni3 hao3",
+    "definitions": "['Hi!', 'Hello!', 'How are you?']",
+    "toneMarks": "[3, 3]",
+    "searchablePinyin": "nihao",
+    "searchablePinyinTones": "ni3hao3",
+    "searchableEnglish": "['hi', 'hello', 'howareyou']"
 }
 ```
+
+## __Usage__
+Once the resulting `cc-cedict.json` file has been built, you can move it to the Syng project directory at `/app/src/db/`. Now the next time Syng loads it will be using the version of CC-CEDICT that was just built.
 
 ## __Contributors__
 - [Preston Wang-Stosur-Bassett](http://www.stosur.info)

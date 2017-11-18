@@ -10,13 +10,13 @@ This file takes the CC-CEDICT file and generates a json file with the appropriat
 The resulting JSON file will have the words from the CC-CEDICT file in the following format:
 ```json
 {
-    traditional: String, // 你好
-    simplified: String, // 你好
-    pronunciation: String, // ni3 hao3
-    definitions: Array(String), // ["Hi!", "Hello!", "How are you?"]
-    toneMarks: Array(Number), // [3, 3]
-    searchablePinyin: String, // nihao
-    searchableEnglish: Array(String) // ["hi", "hello", "howareyou"]
+    "traditional": "String", // 你好
+    "simplified": "String", // 你好
+    "pronunciation": "String", // ni3 hao3
+    "definitions": "Array(String)", // ["Hi!", "Hello!", "How are you?"]
+    "toneMarks": "Array(Number)", // [3, 3]
+    "searchablePinyin": "String", // nihao
+    "searchableEnglish": "Array(String)" // ["hi", "hello", "howareyou"]
 }
 ```
 

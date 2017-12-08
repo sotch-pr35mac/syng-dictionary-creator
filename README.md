@@ -12,7 +12,7 @@ The resulting JSON file will have the words from the CC-CEDICT file in the follo
 {
     "traditional": "你好",
     "simplified": "你好",
-    "pronunciation": "ni3 hao3",
+    "pronunciation": "nǐ hǎo",
     "definitions": "['Hi!', 'Hello!', 'How are you?']",
     "toneMarks": "[3, 3]",
     "searchablePinyin": "nihao",

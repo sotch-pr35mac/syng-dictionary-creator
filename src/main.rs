@@ -17,6 +17,46 @@ use std::path::Path;
 use regex::Regex;
 use prettify_pinyin::prettify_pinyin;
 
+fn get_searchable_definitions(definitions: &Vec<&str>) -> Vec<String> {
+    let mut searchable: Vec<String> = Vec::new();
+
+    for def in definitions {
+        let mut formatted: String = def.to_string();
+
+        // If there are paranthesis, remove them and everything in-between them
+        if def.contains("(") && def.contains(")") {
+            let open_paren_index = def.chars().position(|c| c == '(').unwrap();
+            let close_paren_index = def.chars().position(|c| c == ')').unwrap();
+
+            let mut start = def.chars().skip(0).take(open_paren_index).collect::<String>();
+            let mut end = def.chars().skip(close_paren_index + 1).take(def.chars().count()).collect::<String>();
+
+            // Remove trailing spaces
+            if start.chars().count() > 0 {
+                start = start.chars().take(start.chars().count() - 1).collect::<String>();
+            } else if end.chars().count() > 0 {
+                end = end.chars().skip(1).collect::<String>();
+            }
+
+            formatted = format!("{}{}", start, end);
+        }
+
+        // Remove any punctuation if there is any and make all characters lower case
+        let english_regex = Regex::new(r"\d|\p{P}").unwrap();
+        formatted = english_regex.split(&formatted).filter(|&x| x != "").collect::<String>().to_lowercase();
+
+        searchable.push(formatted.replace(" ", "%20"));
+
+        // Remove "to" at the beginning of verbs
+        if formatted.chars().take(3).collect::<String>() == String::from("to ") {
+            let formatted_verb: String = formatted.chars().skip(3).collect::<String>();
+            searchable.push(formatted_verb.replace(" ", "%20"));
+        }
+    }
+
+    return searchable;
+}
+
 
 fn main() {
     let path = Path::new("cc-cedict/");
@@ -70,13 +110,7 @@ fn main() {
                         let searchable_pinyin_tones: String = pinyin_tones_regex.split(&pronunciation).filter(|&x| x != "").collect::<String>().to_lowercase();
 
                         // Process English
-                        let mut searchable_english: Vec<String> = Vec::new();
-
-                        let english_regex = Regex::new(r"\d|\s|\p{P}").unwrap();
-                        for english_word in &definitions {
-                            let searchable_english_word: String = english_regex.split(&english_word).filter(|&x| x != "").collect::<String>().to_lowercase();
-                            searchable_english.push(searchable_english_word);
-                        }
+                        let searchable_english: Vec<String> = get_searchable_definitions(&definitions);
 
                         // Create JSON Object
                         let word_object = json!({

@@ -15,7 +15,7 @@ use std::fs::File;
 use std::io::Read;
 use std::path::Path;
 use regex::Regex;
-use prettify_pinyin::prettify_pinyin;
+use prettify_pinyin::prettify;
 
 fn get_searchable_definitions(definitions: &Vec<&str>) -> Vec<String> {
     let mut searchable: Vec<String> = Vec::new();
@@ -116,7 +116,7 @@ fn main() {
                         let word_object = json!({
                             "t": raw_traditional,
                             "s": raw_simplified,
-                            "p": prettify_pinyin(pronunciation),
+                            "p": prettify(pronunciation),
                             "d": definitions,
                             "to": tone_marks,
                             "sP": searchable_pinyin,

@@ -118,10 +118,10 @@ fn main() {
                             "s": raw_simplified,
                             "p": prettify(pronunciation),
                             "d": definitions,
-                            "to": tone_marks,
-                            "sP": searchable_pinyin,
-                            "sPT": searchable_pinyin_tones,
-                            "sE": searchable_english
+                            "u": tone_marks,
+                            "v": searchable_pinyin,
+                            "w": searchable_pinyin_tones,
+                            "x": searchable_english
                         });
 
                         syng_cedict.push(word_object);
@@ -129,7 +129,7 @@ fn main() {
                     } else {
                         continue;
                     }
-                } 
+                }
             }
 
             let buffer = File::create("cc-cedict.json").expect("There was a problem");

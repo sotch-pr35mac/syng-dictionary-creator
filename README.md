@@ -1,6 +1,6 @@
 # __Syng | 词应__ Dictionary Creator
 #### Create a dictionary file for [Syng | 词应 Chinese-English Dictionary](http://syngdict.com)
-##### v1.0.0
+##### v1.1.1
 ---
 
 ## __About__

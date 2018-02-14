@@ -1,6 +1,7 @@
 /*
  *  @author         :: Preston Wang-Stosur-Bassett <http://stosur.info>
- *  @date           :: Nov 17, 2017
+ *  @created        :: Nov 17, 2017
+ *  @updated        :: ----
  *  @description    :: This file takes a cc-cedict file and outputs it as a json file with some additions to support the Syng dictionary
 */
 

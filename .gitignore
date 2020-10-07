@@ -1,3 +1,5 @@
+.DS_Store
 /target/
 **/*.rs.bk
 cc-cedict.json
+/out/*.dictionary

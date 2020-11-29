@@ -1,8 +1,6 @@
-/*
- *	@author			::	Preston Wang-Stosur-Bassett <p.wanstobas@gmail.com>
- *	@created		::	October 6, 2020
- *	@description	::	This file builds a searchable Syng Dictionary file
- */
+// @author	::	Preston Wang-Stosur-Bassett <p.wanstobas@gmail.com>
+// @created	::	October 6, 2020
+// @description	::	This file builds a searchable Syng Dictionary file
 
 use bincode::serialize_into;
 use serde_derive::Serialize;

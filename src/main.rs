@@ -1,8 +1,7 @@
-/*
- *	@author			::	Preston Wang-Stosur-Bassett <p.wanstobas@gmail.com>
- *	@created		::	October 6, 2020
- *	@description	::	This file converts a cc-cedict file and outputs a Syng Dictionary file
- */
+// @author	::	Preston Wang-Stosur-Bassett <p.wanstobas@gmail.com>
+// @created	::	October 6, 2020
+// @description	::	This file converts a cc-cedict file and outputs a Syng Dictionary file
+
 extern crate bincode;
 extern crate hsk;
 extern crate prettify_pinyin;

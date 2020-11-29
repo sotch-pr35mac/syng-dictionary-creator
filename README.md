@@ -1,5 +1,5 @@
 # __Syng | 词应__ Dictionary Creator
-#### Create a dictionary file for [Syng | 词应 Chinese-English Dictionary](http://syngdict.com)
+#### Create a dictionary file for [Syng | 词应 Chinese-English Dictionary](http://getsyng.com)
 
 ## About
 This project takes a CC-CEDICT file and generates a series of `.dictionary` files to be used in conjunction with Syng Dictionary. 
@@ -40,9 +40,6 @@ struct SyngDictionary {
 1. Run `cargo run`
 2. Take the resulting `.dictionary` files and move them into the the chinese_dictionary project. 
 
-## __Contributors__
-- [Preston Wang-Stosur-Bassett](http://www.stosur.info)
-
 ## __License__
 This software is licensed under the [GNU Public License v3](https://www.gnu.org/licenses/gpl-3.0.en.html).
-The CC-CEDICT is licensed under the [Creative Commons Attribution-Share Alike 4.0 License](https://creativecommons.org/licenses/by-sa/4.0/).
+The CC-CEDICT and resulting `.dictionary` files are licensed under the [Creative Commons Attribution-Share Alike 4.0 License](https://creativecommons.org/licenses/by-sa/4.0/).

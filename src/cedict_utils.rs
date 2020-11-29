@@ -1,8 +1,6 @@
-/*
- *	@author			::	Preston Wang-Stosur-Bassett <p.wanstobas@gmail.com>
- *	@created		::	October 6, 2020
- *	@description	::	This file parses cedict file
- */
+// @author	::	Preston Wang-Stosur-Bassett <p.wanstobas@gmail.com>
+// @created	::	October 6, 2020
+// @description	::	This file parses cedict file
 
 #[path = "./dictionary_utils.rs"] mod dictionary_utils;
 

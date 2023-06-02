@@ -96,7 +96,7 @@ fn process_cedict_entry(raw_line: &str) -> CEDictEntry {
                     traditional: mw_traditional,
                     simplified: mw_simplified,
                     pinyin_numbers: (mw_pinyin).to_string(),
-                    pinyin_marks: prettify((mw_pinyin).to_string()),
+                    pinyin_marks: prettify(&mw_pinyin),
                 };
 
                 measure_words.push(measure_word);
@@ -150,7 +150,7 @@ pub fn get_cedict_data() -> Vec<WordEntry> {
                     traditional: cedict_entry.traditional,
                     simplified: cedict_entry.simplified,
                     pinyin_numbers: (cedict_entry.pinyin).to_string(),
-                    pinyin_marks: prettify((cedict_entry.pinyin).to_string()),
+                    pinyin_marks: prettify(&cedict_entry.pinyin),
                     english: cedict_entry.english,
                     measure_words: cedict_entry.measure_words,
                     word_id: id,

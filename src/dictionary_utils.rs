@@ -3,13 +3,14 @@
 // @description	::	This file builds a searchable Syng Dictionary file
 
 use bincode::serialize_into;
+use fst::Set;
 use regex::Regex;
 use serde::Serialize;
 use std::collections::HashMap;
 use std::collections::hash_map::DefaultHasher;
 use std::fs::File;
 use std::hash::{Hash, Hasher};
-use std::io::BufWriter;
+use std::io::{BufWriter, Write};
 use std::sync::LazyLock;
 
 static WHITESPACE_REGEX: LazyLock<Regex> =
@@ -177,17 +178,58 @@ fn write_data_file(dictionary: &SyngDictionary) {
     println!("Written.");
 }
 
+fn build_chinese_fst(dictionary: &SyngDictionary) -> Set<Vec<u8>> {
+    let mut keys: Vec<&str> = dictionary
+        .simplified
+        .keys()
+        .chain(dictionary.traditional.keys())
+        .map(String::as_str)
+        .collect();
+
+    keys.sort_unstable();
+    keys.dedup();
+
+    Set::from_iter(keys).expect("Failed to build Chinese tokenizer FST")
+}
+
+fn write_chinese_fst_file(dictionary: &SyngDictionary) {
+    println!("\nWriting Chinese tokenizer FST to file...");
+    let set = build_chinese_fst(dictionary);
+    let mut data_file = BufWriter::new(File::create("./out/chinese.fst").unwrap());
+    data_file.write_all(set.as_fst().as_bytes()).unwrap();
+    data_file.flush().unwrap();
+    println!("Written.");
+}
+
 pub fn write_dictionary_files(dictionary: &SyngDictionary) {
     write_searchable_file(&dictionary.pinyin, "pinyin");
     write_searchable_file(&dictionary.english, "english");
     write_searchable_file(&dictionary.traditional, "traditional");
     write_searchable_file(&dictionary.simplified, "simplified");
+    write_chinese_fst_file(dictionary);
     write_data_file(dictionary);
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashSet;
+
+    fn empty_dictionary() -> SyngDictionary {
+        SyngDictionary {
+            pinyin: HashMap::new(),
+            english: HashMap::new(),
+            simplified: HashMap::new(),
+            traditional: HashMap::new(),
+            data: HashMap::new(),
+        }
+    }
+
+    fn insert_keys(map: &mut HashMap<String, Vec<u32>>, keys: &[&str]) {
+        for (id, key) in keys.iter().enumerate() {
+            map.insert((*key).to_string(), vec![id as u32]);
+        }
+    }
 
     fn word_entry(traditional: &str, simplified: &str, english: Vec<&str>) -> WordEntry {
         WordEntry {
@@ -244,6 +286,72 @@ mod tests {
         assert_eq!(dictionary.pinyin.get("ni3hao3"), Some(&vec![0, 1]));
         assert_eq!(dictionary.data.get(&0).unwrap().word_id, 0);
         assert_eq!(dictionary.data.get(&1).unwrap().word_id, 1);
+    }
+
+    #[test]
+    fn builds_chinese_fst_from_the_distinct_union_of_searchable_keys() {
+        let simplified = ["以后", "用于", "万", "舍不得", "今天"];
+        let traditional = ["以後", "用於", "萬", "捨不得", "今天", "万"];
+        let mut dictionary = empty_dictionary();
+        insert_keys(&mut dictionary.simplified, &simplified);
+        insert_keys(&mut dictionary.traditional, &traditional);
+
+        let expected: HashSet<&str> = simplified
+            .iter()
+            .chain(traditional.iter())
+            .copied()
+            .collect();
+        let set = build_chinese_fst(&dictionary);
+
+        for key in &expected {
+            assert!(set.contains(key));
+        }
+        assert_eq!(set.len(), expected.len());
+        assert!(!set.contains("明天"));
+
+        let stored_keys = set.stream().into_strs().unwrap();
+        assert_eq!(
+            stored_keys
+                .iter()
+                .filter(|key| key.as_str() == "今天")
+                .count(),
+            1
+        );
+        assert_eq!(
+            stored_keys
+                .iter()
+                .filter(|key| key.as_str() == "万")
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn builds_chinese_fst_deterministically_across_map_insertion_orders() {
+        let mut first = empty_dictionary();
+        insert_keys(
+            &mut first.simplified,
+            &["以后", "用于", "万", "舍不得", "今天"],
+        );
+        insert_keys(
+            &mut first.traditional,
+            &["以後", "用於", "萬", "捨不得", "今天", "万"],
+        );
+
+        let mut second = empty_dictionary();
+        insert_keys(
+            &mut second.simplified,
+            &["今天", "舍不得", "万", "用于", "以后"],
+        );
+        insert_keys(
+            &mut second.traditional,
+            &["万", "今天", "捨不得", "萬", "用於", "以後"],
+        );
+
+        let first = build_chinese_fst(&first);
+        let second = build_chinese_fst(&second);
+
+        assert_eq!(first.as_fst().as_bytes(), second.as_fst().as_bytes());
     }
 
     #[test]

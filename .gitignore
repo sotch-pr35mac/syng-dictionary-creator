@@ -3,3 +3,4 @@
 **/*.rs.bk
 cc-cedict.json
 /out/*.dictionary
+/out/*.fst

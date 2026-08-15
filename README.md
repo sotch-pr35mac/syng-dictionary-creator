@@ -2,7 +2,7 @@
 #### Create a dictionary file for [Syng | 词应 Chinese-English Dictionary](http://getsyng.com)
 
 ## About
-This project takes a CC-CEDICT file and generates a series of `.dictionary` files to be used in conjunction with Syng Dictionary. 
+This project takes a CC-CEDICT file and generates a series of `.dictionary` files and a Chinese tokenization FST to be used in conjunction with Syng Dictionary.
 
 ## __Result__
 The resulting `.dictionary` files will have the words from the CC-CEDICT file in the following format:
@@ -36,9 +36,11 @@ struct SyngDictionary {
 }
 ```
 
+The generator also writes `chinese.fst`, an `fst` 0.4 set containing the deduplicated union of the simplified and traditional dictionary headwords.
+
 ## __Usage__
 1. Run `cargo run`
-2. Take the resulting `.dictionary` files and move them into the the chinese_dictionary project. 
+2. Copy the resulting `.dictionary` files and `chinese.fst` into the `chinese_dictionary/data` directory.
 
 ## __License__
 This software is licensed under the [GNU Public License v3](https://www.gnu.org/licenses/gpl-3.0.en.html).

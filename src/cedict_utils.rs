@@ -2,8 +2,8 @@
 // @created	::	October 6, 2020
 // @description	::	This file parses cedict file
 
-use crate::dictionary_utils::{MeasureWord, WordEntry, calculate_hash};
-use hsk::Hsk;
+use crate::dictionary_utils::{HskLevels, MeasureWord, WordEntry, calculate_hash};
+use hsk::{HskError, HskQuery, levels_all};
 use prettify_pinyin::prettify;
 use regex::Regex;
 use std::fs::File;
@@ -41,6 +41,21 @@ fn prune_measure_words(english: Vec<String>) -> Vec<String> {
         .into_iter()
         .filter(|definition| !is_measure_word(definition))
         .collect()
+}
+
+fn get_hsk_levels(simplified: &str, pinyin: &str) -> HskLevels {
+    let matches = match levels_all(HskQuery::new(simplified).pinyin(pinyin)) {
+        Ok(matches) => matches,
+        Err(HskError::InvalidPinyin(_)) => levels_all(HskQuery::new(simplified))
+            .expect("CC-CEDICT entries should have a non-empty simplified form"),
+        Err(HskError::EmptyWord) => {
+            unreachable!("CC-CEDICT entries should have a non-empty simplified form")
+        }
+        Err(_) => levels_all(HskQuery::new(simplified))
+            .expect("CC-CEDICT entries should have a non-empty simplified form"),
+    };
+
+    HskLevels::from_matches(matches)
 }
 
 fn process_cedict_entry(line: &str) -> CedictEntry {
@@ -107,13 +122,15 @@ fn process_cedict_entry(line: &str) -> CedictEntry {
 
 pub fn get_cedict_data() -> Vec<WordEntry> {
     let path = Path::new("cc-cedict/");
-    let hsk_list = Hsk::new();
     let mut syng_dict = Vec::new();
 
     for entry in path
         .read_dir()
         .expect("Could not read directory.")
         .flatten()
+        .filter(|entry| {
+            entry.path().is_file() && !entry.file_name().to_string_lossy().starts_with('.')
+        })
     {
         let mut file = match File::open(entry.path()) {
             Ok(file) => file,
@@ -134,7 +151,7 @@ pub fn get_cedict_data() -> Vec<WordEntry> {
             if !line.starts_with('#') {
                 let cedict_entry = process_cedict_entry(line);
                 let tone_marks = get_tone_marks(&cedict_entry.pinyin);
-                let hsk_level = hsk_list.get_hsk(&cedict_entry.simplified);
+                let hsk_levels = get_hsk_levels(&cedict_entry.simplified, &cedict_entry.pinyin);
                 let new_entry = WordEntry {
                     hash: calculate_hash(&cedict_entry),
                     traditional: cedict_entry.traditional,
@@ -144,7 +161,7 @@ pub fn get_cedict_data() -> Vec<WordEntry> {
                     english: cedict_entry.english,
                     measure_words: cedict_entry.measure_words,
                     word_id: id,
-                    hsk: hsk_level,
+                    hsk: hsk_levels,
                     tone_marks,
                 };
 
@@ -204,5 +221,59 @@ mod tests {
         let entry = process_cedict_entry("丈夫 丈夫 [zhang4 fu5] /husband/CL:個|个[ge4]/");
 
         assert_eq!(calculate_hash(&entry), 1_067_393_186_030_521_090);
+    }
+
+    #[test]
+    fn assigns_levels_from_all_hsk_systems() {
+        let levels = get_hsk_levels("出租车", "chu1 zu1 che1");
+
+        assert_eq!(
+            levels.hsk_2015,
+            vec![crate::dictionary_utils::HskLevel::One]
+        );
+        assert_eq!(
+            levels.proficiency_standard_2021,
+            vec![crate::dictionary_utils::HskLevel::Two]
+        );
+        assert_eq!(
+            levels.hsk_exam_syllabus_2025,
+            vec![crate::dictionary_utils::HskLevel::One]
+        );
+    }
+
+    #[test]
+    fn uses_pinyin_to_disambiguate_newer_hsk_systems() {
+        let zhang = get_hsk_levels("长", "zhang3");
+        let chang = get_hsk_levels("长", "chang2");
+
+        assert_eq!(
+            zhang.proficiency_standard_2021,
+            vec![
+                crate::dictionary_utils::HskLevel::Two,
+                crate::dictionary_utils::HskLevel::Six
+            ]
+        );
+        assert_eq!(
+            chang.proficiency_standard_2021,
+            vec![crate::dictionary_utils::HskLevel::Two]
+        );
+    }
+
+    #[test]
+    fn falls_back_to_simplified_word_for_invalid_pinyin() {
+        let levels = get_hsk_levels("出租车", "11 Qu1");
+
+        assert_eq!(
+            levels.hsk_2015,
+            vec![crate::dictionary_utils::HskLevel::One]
+        );
+        assert_eq!(
+            levels.proficiency_standard_2021,
+            vec![crate::dictionary_utils::HskLevel::Two]
+        );
+        assert_eq!(
+            levels.hsk_exam_syllabus_2025,
+            vec![crate::dictionary_utils::HskLevel::One]
+        );
     }
 }

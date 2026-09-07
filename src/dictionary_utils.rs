@@ -4,6 +4,7 @@
 
 use bincode::serialize_into;
 use fst::Set;
+use hsk::{HskLevel as LibraryHskLevel, HskSystem};
 use regex::Regex;
 use serde::Serialize;
 use std::collections::HashMap;
@@ -28,6 +29,56 @@ pub struct MeasureWord {
     pub pinyin_numbers: String,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+pub enum HskLevel {
+    One,
+    Two,
+    Three,
+    Four,
+    Five,
+    Six,
+    SevenToNine,
+}
+
+impl From<LibraryHskLevel> for HskLevel {
+    fn from(level: LibraryHskLevel) -> Self {
+        match level {
+            LibraryHskLevel::One => Self::One,
+            LibraryHskLevel::Two => Self::Two,
+            LibraryHskLevel::Three => Self::Three,
+            LibraryHskLevel::Four => Self::Four,
+            LibraryHskLevel::Five => Self::Five,
+            LibraryHskLevel::Six => Self::Six,
+            LibraryHskLevel::SevenToNine => Self::SevenToNine,
+        }
+    }
+}
+
+#[derive(Default, Serialize)]
+pub struct HskLevels {
+    pub hsk_2015: Vec<HskLevel>,
+    pub proficiency_standard_2021: Vec<HskLevel>,
+    pub hsk_exam_syllabus_2025: Vec<HskLevel>,
+}
+
+impl HskLevels {
+    pub fn from_matches(matches: Vec<(HskSystem, Vec<LibraryHskLevel>)>) -> Self {
+        let mut levels = Self::default();
+
+        for (system, system_levels) in matches {
+            let target = match system {
+                HskSystem::Hsk2015 => &mut levels.hsk_2015,
+                HskSystem::ProficiencyStandard2021 => &mut levels.proficiency_standard_2021,
+                HskSystem::HskExamSyllabus2025 => &mut levels.hsk_exam_syllabus_2025,
+                _ => panic!("new HSK system requires a dictionary schema update"),
+            };
+            *target = system_levels.into_iter().map(HskLevel::from).collect();
+        }
+
+        levels
+    }
+}
+
 #[derive(Serialize)]
 pub struct WordEntry {
     pub traditional: String,
@@ -38,7 +89,7 @@ pub struct WordEntry {
     pub tone_marks: Vec<u8>,
     pub hash: u64,
     pub measure_words: Vec<MeasureWord>,
-    pub hsk: u8,
+    pub hsk: HskLevels,
     pub word_id: u32,
 }
 
@@ -241,7 +292,10 @@ mod tests {
             tone_marks: vec![3, 3],
             hash: 42,
             measure_words: Vec::new(),
-            hsk: 1,
+            hsk: HskLevels {
+                hsk_2015: vec![HskLevel::One],
+                ..HskLevels::default()
+            },
             word_id: 99,
         }
     }
@@ -286,6 +340,16 @@ mod tests {
         assert_eq!(dictionary.pinyin.get("ni3hao3"), Some(&vec![0, 1]));
         assert_eq!(dictionary.data.get(&0).unwrap().word_id, 0);
         assert_eq!(dictionary.data.get(&1).unwrap().word_id, 1);
+    }
+
+    #[test]
+    fn preserves_the_shared_advanced_hsk_band() {
+        let levels = HskLevels::from_matches(vec![(
+            HskSystem::HskExamSyllabus2025,
+            vec![LibraryHskLevel::SevenToNine],
+        )]);
+
+        assert_eq!(levels.hsk_exam_syllabus_2025, vec![HskLevel::SevenToNine]);
     }
 
     #[test]
@@ -370,7 +434,10 @@ mod tests {
                 pinyin_marks: "C".to_string(),
                 pinyin_numbers: "D".to_string(),
             }],
-            hsk: 6,
+            hsk: HskLevels {
+                hsk_2015: vec![HskLevel::Six],
+                ..HskLevels::default()
+            },
             word_id: 0x0a0b_0c0d,
         };
 
@@ -389,7 +456,7 @@ mod tests {
         append_string(&mut expected, "B");
         append_string(&mut expected, "C");
         append_string(&mut expected, "D");
-        expected.push(6);
+        expected.extend_from_slice(&bincode::serialize(&entry.hsk).unwrap());
         expected.extend_from_slice(&0x0a0b_0c0d_u32.to_le_bytes());
 
         assert_eq!(bincode::serialize(&entry).unwrap(), expected);

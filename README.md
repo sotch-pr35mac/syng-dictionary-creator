@@ -14,6 +14,22 @@ struct MeasureWord {
         pinyin_numbers: String
 }
 
+enum HskLevel {
+        One,
+        Two,
+        Three,
+        Four,
+        Five,
+        Six,
+        SevenToNine
+}
+
+struct HskLevels {
+        hsk_2015: Vec<HskLevel>,
+        proficiency_standard_2021: Vec<HskLevel>,
+        hsk_exam_syllabus_2025: Vec<HskLevel>
+}
+
 struct WordEntry {
         traditional: String,
         simplified: String,
@@ -23,7 +39,7 @@ struct WordEntry {
         tone_marks: Vec<u8>,
         hash: u64,
         measure_words: Vec<MeasureWord>,
-        hsk: u8,
+        hsk: HskLevels,
         word_id: u32
 }
 

@@ -19,7 +19,7 @@ static VALID_SYLLABLES: LazyLock<HashSet<&'static str>> = LazyLock::new(|| {
      hei hen heng hm hng hong hou hu hua huai huan huang hui hun huo ji jia jian jiang \
      jiao jie jin jing jiong jiu ju juan jue jun ka kai kan kang kao ke kei ken keng kong \
      kou ku kua kuai kuan kuang kui kun kuo la lai lan lang lao le lei leng li lia lian \
-     liang liao lie lin ling liu lo long lou lu lü luan lüan lue lüe lun luo ma mai man \
+     liang liao lie lin ling liu lo long lou lu lü luan lüan lue lüe lun luo m ma mai man \
      mang mao me mei men meng mi mian miao mie min ming miu mo mou mu n na nai nan nang \
      nao ne nei nen neng ng ni nian niang niao nie nin ning niu nong nou nu nü nuan nüan \
      nue nüe nun nuo o ou pa pai pan pang pao pei pen peng pi pian piao pie pin ping po pou \
@@ -71,6 +71,11 @@ struct Syllable {
     tone: u8,
 }
 
+/// Returns whether a source character separates pronunciation syllables.
+fn is_separator(character: char) -> bool {
+    character.is_whitespace() || matches!(character, '-' | '\'' | '’' | ',' | '·')
+}
+
 /// Parses numbered Pinyin into canonical display, identity, and tone forms.
 pub fn from_numbered(value: &str) -> Result<Pinyin, PinyinError> {
     let normalized = value.nfc().collect::<String>();
@@ -108,7 +113,7 @@ pub fn from_numbered(value: &str) -> Result<Pinyin, PinyinError> {
                 return Err(PinyinError::InvalidTone);
             }
             push_numbered_syllable(&mut syllables, &mut letters, tone)?;
-        } else if character.is_whitespace() || matches!(character, '-' | '\'' | '’') {
+        } else if is_separator(character) {
             if !letters.is_empty() {
                 return Err(PinyinError::MissingTone);
             }
@@ -159,7 +164,7 @@ pub fn from_marked(value: &str, han_character_count: Option<usize>) -> Result<Pi
     }
 
     let chunks = normalized
-        .split(|character: char| character.is_whitespace() || matches!(character, '-' | '\'' | '’'))
+        .split(is_separator)
         .filter(|chunk| !chunk.is_empty())
         .collect::<Vec<_>>();
     let mut segmentations = vec![Vec::<Syllable>::new()];
@@ -203,10 +208,51 @@ pub fn from_marked(value: &str, han_character_count: Option<usize>) -> Result<Pi
 fn segment_marked_chunk(chunk: &str) -> Result<Vec<Vec<Syllable>>, PinyinError> {
     let mut letters = Vec::new();
     let mut tones = Vec::new();
-    for character in chunk.chars() {
-        let (base, tone) = marked_character(character).ok_or(PinyinError::InvalidCharacter)?;
-        letters.push(base);
-        tones.push(tone);
+    for character in chunk.nfd() {
+        if character.is_ascii_alphabetic() {
+            letters.push(character);
+            tones.push(None);
+            continue;
+        }
+
+        let last_letter = letters.last_mut().ok_or(PinyinError::InvalidCharacter)?;
+        let last_tone = tones.last_mut().expect("letters and tones remain aligned");
+        if character == '\u{0308}' {
+            *last_letter = match *last_letter {
+                'u' => 'ü',
+                'U' => 'Ü',
+                _ => return Err(PinyinError::InvalidCharacter),
+            };
+            continue;
+        }
+        let tone = match character {
+            '\u{0304}' => 1,
+            '\u{0301}' => 2,
+            '\u{030c}' => 3,
+            '\u{0300}' => 4,
+            _ => return Err(PinyinError::InvalidCharacter),
+        };
+        if !matches!(
+            *last_letter,
+            'a' | 'A'
+                | 'e'
+                | 'E'
+                | 'i'
+                | 'I'
+                | 'o'
+                | 'O'
+                | 'u'
+                | 'U'
+                | 'ü'
+                | 'Ü'
+                | 'm'
+                | 'M'
+                | 'n'
+                | 'N'
+        ) || last_tone.replace(tone).is_some()
+        {
+            return Err(PinyinError::InvalidCharacter);
+        }
     }
     let mut results = Vec::new();
     segment_from(&letters, &tones, 0, &mut Vec::new(), &mut results);
@@ -237,7 +283,7 @@ fn segment_from(
             .iter()
             .flatten()
             .copied()
-            .collect::<HashSet<_>>();
+            .collect::<Vec<_>>();
         if explicit_tones.len() > 1 {
             continue;
         }
@@ -264,64 +310,6 @@ fn validate_syllable(value: &str) -> Result<(), PinyinError> {
     }
 }
 
-/// Decomposes one accepted marked-Pinyin character into its base and tone.
-fn marked_character(character: char) -> Option<(char, Option<u8>)> {
-    let result = match character {
-        'ā' => ('a', Some(1)),
-        'á' => ('a', Some(2)),
-        'ǎ' => ('a', Some(3)),
-        'à' => ('a', Some(4)),
-        'Ā' => ('A', Some(1)),
-        'Á' => ('A', Some(2)),
-        'Ǎ' => ('A', Some(3)),
-        'À' => ('A', Some(4)),
-        'ē' => ('e', Some(1)),
-        'é' => ('e', Some(2)),
-        'ě' => ('e', Some(3)),
-        'è' => ('e', Some(4)),
-        'Ē' => ('E', Some(1)),
-        'É' => ('E', Some(2)),
-        'Ě' => ('E', Some(3)),
-        'È' => ('E', Some(4)),
-        'ī' => ('i', Some(1)),
-        'í' => ('i', Some(2)),
-        'ǐ' => ('i', Some(3)),
-        'ì' => ('i', Some(4)),
-        'Ī' => ('I', Some(1)),
-        'Í' => ('I', Some(2)),
-        'Ǐ' => ('I', Some(3)),
-        'Ì' => ('I', Some(4)),
-        'ō' => ('o', Some(1)),
-        'ó' => ('o', Some(2)),
-        'ǒ' => ('o', Some(3)),
-        'ò' => ('o', Some(4)),
-        'Ō' => ('O', Some(1)),
-        'Ó' => ('O', Some(2)),
-        'Ǒ' => ('O', Some(3)),
-        'Ò' => ('O', Some(4)),
-        'ū' => ('u', Some(1)),
-        'ú' => ('u', Some(2)),
-        'ǔ' => ('u', Some(3)),
-        'ù' => ('u', Some(4)),
-        'Ū' => ('U', Some(1)),
-        'Ú' => ('U', Some(2)),
-        'Ǔ' => ('U', Some(3)),
-        'Ù' => ('U', Some(4)),
-        'ǖ' => ('ü', Some(1)),
-        'ǘ' => ('ü', Some(2)),
-        'ǚ' => ('ü', Some(3)),
-        'ǜ' => ('ü', Some(4)),
-        'Ǖ' => ('Ü', Some(1)),
-        'Ǘ' => ('Ü', Some(2)),
-        'Ǚ' => ('Ü', Some(3)),
-        'Ǜ' => ('Ü', Some(4)),
-        'ü' | 'Ü' => (character, None),
-        plain if plain.is_ascii_alphabetic() => (plain, None),
-        _ => return None,
-    };
-    Some(result)
-}
-
 /// Builds the three canonical stored forms from validated syllables.
 fn make_pinyin(syllables: Vec<Syllable>) -> Pinyin {
     let spaced_numbers = syllables
@@ -329,11 +317,53 @@ fn make_pinyin(syllables: Vec<Syllable>) -> Pinyin {
         .map(|syllable| format!("{}{}", syllable.letters, syllable.tone))
         .collect::<Vec<_>>()
         .join(" ");
+    let marks = syllables
+        .iter()
+        .map(render_syllable)
+        .collect::<Vec<_>>()
+        .join(" ");
     Pinyin {
-        marks: prettify(&spaced_numbers),
+        marks,
         numbers: spaced_numbers.replace(' ', ""),
         tones: syllables.iter().map(|syllable| syllable.tone).collect(),
     }
+}
+
+/// Renders a syllable, including tones on syllabic nasals without vowels.
+fn render_syllable(syllable: &Syllable) -> String {
+    if syllable.letters.chars().any(|character| {
+        matches!(
+            character,
+            'a' | 'A' | 'e' | 'E' | 'i' | 'I' | 'o' | 'O' | 'u' | 'U' | 'ü' | 'Ü'
+        )
+    }) {
+        return prettify(&format!("{}{}", syllable.letters, syllable.tone));
+    }
+    if syllable.tone == 5 {
+        return syllable.letters.clone();
+    }
+    let mark = match syllable.tone {
+        1 => '\u{0304}',
+        2 => '\u{0301}',
+        3 => '\u{030c}',
+        4 => '\u{0300}',
+        _ => unreachable!("validated tone"),
+    };
+    let target = if syllable.letters.contains(['m', 'M']) {
+        ['m', 'M']
+    } else {
+        ['n', 'N']
+    };
+    let mut rendered = String::new();
+    let mut marked = false;
+    for character in syllable.letters.chars() {
+        rendered.push(character);
+        if !marked && target.contains(&character) {
+            rendered.push(mark);
+            marked = true;
+        }
+    }
+    rendered.nfc().collect()
 }
 
 /// Counts characters from the Unicode Han ideograph ranges used for segmentation.
@@ -363,6 +393,36 @@ mod tests {
     }
 
     #[test]
+    fn approved_boundaries_are_omitted_from_numbered_pinyin() {
+        let idiom = from_numbered("yi1 bu4 zuo4, er4 bu4 xiu1").unwrap();
+        assert_eq!(idiom.numbers, "yi1bu4zuo4er4bu4xiu1");
+        assert_eq!(idiom.tones, vec![1, 4, 4, 4, 4, 1]);
+
+        let name = from_numbered("Ya4 dang1 · Si1 mi4").unwrap();
+        assert_eq!(name.numbers, "Ya4dang1Si1mi4");
+        assert_eq!(name.tones, vec![4, 1, 1, 4]);
+        assert_eq!(from_numbered("yi1 bu, er4"), Err(PinyinError::MissingTone));
+    }
+
+    #[test]
+    fn syllabic_nasals_round_trip_with_tones() {
+        let expected_marks = [(1, "m̄"), (2, "ḿ"), (3, "m̌"), (4, "m̀")];
+        for (tone, marks) in expected_marks {
+            let numbered = from_numbered(&format!("m{tone}")).unwrap();
+            assert_eq!(numbered.marks, marks);
+            assert_eq!(from_marked(marks, Some(1)).unwrap(), numbered);
+        }
+
+        for spelling in ["n", "ng", "hm", "hng"] {
+            for tone in 1..=5 {
+                let numbered = from_numbered(&format!("{spelling}{tone}")).unwrap();
+                assert_eq!(from_marked(&numbered.marks, Some(1)).unwrap(), numbered);
+            }
+        }
+        assert_eq!(from_marked("ńg", Some(1)).unwrap().numbers, "ng2");
+    }
+
+    #[test]
     fn malformed_and_sentinel_readings_are_ineligible() {
         assert_eq!(from_numbered("xx5"), Err(PinyinError::NotApplicable));
         assert!(from_numbered("ma0").is_err());
@@ -380,5 +440,13 @@ mod tests {
             Err(PinyinError::AmbiguousSegmentation)
         );
         assert_eq!(from_marked("xian", Some(1)).unwrap().numbers, "xian5");
+    }
+
+    #[test]
+    fn marked_pinyin_accepts_shared_boundaries_and_rejects_extra_tone_marks() {
+        let pinyin = from_marked("yī bù zuò, èr bù xiū", Some(6)).unwrap();
+        assert_eq!(pinyin.numbers, "yi1bu4zuo4er4bu4xiu1");
+        assert!(from_marked("m\u{0301}\u{0301}", Some(1)).is_err());
+        assert!(from_marked("m\u{0301}\u{0300}", Some(1)).is_err());
     }
 }

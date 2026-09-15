@@ -256,4 +256,23 @@ mod tests {
         assert_eq!(record.definitions[0].gloss.value, "first (explanation)");
         assert_eq!(record.definitions[0].qualifiers.len(), 1);
     }
+
+    #[test]
+    fn admits_reviewed_punctuation_and_syllabic_nasal_readings() {
+        let idiom = parse_line(
+            "一不做，二不休 一不做，二不休 [yi1 bu4 zuo4, er4 bu4 xiu1] /in for a penny, in for a pound/",
+            1,
+        )
+        .unwrap();
+        assert_eq!(idiom.pinyin.unwrap().numbers, "yi1bu4zuo4er4bu4xiu1");
+
+        let name = parse_line("亞當·斯密 亚当·斯密 [Ya4 dang1 · Si1 mi4] /Adam Smith/", 2).unwrap();
+        assert_eq!(name.pinyin.unwrap().numbers, "Ya4dang1Si1mi4");
+
+        for (line_number, tone) in [(3, 1), (4, 2), (5, 4)] {
+            let record =
+                parse_line(&format!("呣 呣 [m{tone}] /syllabic nasal/"), line_number).unwrap();
+            assert_eq!(record.pinyin.unwrap().numbers, format!("m{tone}"));
+        }
+    }
 }

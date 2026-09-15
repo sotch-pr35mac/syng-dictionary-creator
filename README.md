@@ -95,7 +95,7 @@ Standalone classifiers and alternate pronunciations stay at lexical-unit scope. 
 
 ## Stable identity
 
-Simplified and traditional forms are normalized to NFC, trimmed only at their outer Unicode whitespace, and rejected if empty or containing controls. Numbered Pinyin is case-preserving, uses tones 1–5, normalizes `u:` and `v` to `ü`, and is concatenated without separators.
+Simplified and traditional forms are normalized to NFC, trimmed only at their outer Unicode whitespace, and rejected if empty or containing controls. Numbered Pinyin is case-preserving, uses tones 1–5, normalizes `u:` and `v` to `ü`, and is concatenated without separators. Spaces, hyphens, apostrophes, commas, and middle dots are accepted as pronunciation boundaries and omitted from the canonical form.
 
 The version-1 identity is:
 
@@ -111,7 +111,7 @@ The version-1 identity is:
 
 Capitalization and tones remain significant. For example, `fu4Ming2` and `fu4ming2` are distinct, as are `yan1huo3` and `yan1huo5`.
 
-Marked Pinyin is converted only when the reviewed syllable vocabulary yields one segmentation, constrained by the Han-character count when applicable. Ambiguous readings, `xx5`, malformed input, and non-Mandarin readings cannot define an identity.
+Marked Pinyin is converted only when the reviewed syllable vocabulary yields one segmentation, constrained by the Han-character count when applicable. Combining tone marks are accepted, including on the reviewed syllabic nasals `m`, `n`, `ng`, `hm`, and `hng`; their tones are retained in both numbered and display forms. Ambiguous readings, `xx5`, malformed input, and non-Mandarin readings cannot define an identity.
 
 ## Output
 

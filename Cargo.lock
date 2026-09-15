@@ -1070,18 +1070,8 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
- "syng-english-search-format",
  "tar",
  "tempfile",
- "unicode-normalization",
- "zstd",
-]
-
-[[package]]
-name = "syng-english-search-format"
-version = "1.0.0"
-dependencies = [
- "fst",
  "unicode-normalization",
  "zstd",
 ]

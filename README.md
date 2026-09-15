@@ -38,7 +38,7 @@ cargo deny check licenses
 
 ## English search design
 
-[English search architecture](docs/english-search-architecture.md) specifies the finalized generator-side normalization, extraction, morphology, and binary format, plus the future consumer responsibilities. This repository generates the supporting data but does not implement production query planning or ranking.
+[English search architecture](docs/english-search-architecture.md) specifies the finalized generator-side normalization, extraction, morphology, and binary format, plus the implemented consumer responsibilities. This repository generates the supporting data but does not implement production query planning or ranking.
 
 ## Canonical schema
 
@@ -134,7 +134,7 @@ The published bundle contains:
 - `NOTICE.md`: source copyrights, attribution, license evidence, and modification notices
 - `wiktionary-attribution.json`: lexical identities to English Wiktionary entry pages and contributor histories
 
-Every `.dictionary.zst` file contains a schema-versioned bincode envelope compressed as a deterministic Zstandard level-19 frame with content size and checksum enabled. Ordered maps and sorted lists make runtime-key assignment and serialization deterministic. The future `chinese_dictionary` build script should decompress the dictionary archives to their corresponding `.dictionary` names and `english.search.zst` to `OUT_DIR/english.search` before compiling the consumer.
+Every `.dictionary.zst` file contains a schema-versioned bincode envelope compressed as a deterministic Zstandard level-19 frame with content size and checksum enabled. Ordered maps and sorted lists make runtime-key assignment and serialization deterministic. `chinese_dictionary` 4.0 decompresses the dictionary archives to their corresponding `.dictionary` names and `english.search.zst` to `OUT_DIR/english.search` in its build script before compiling the consumer.
 
 The compressed English index has a 22 MiB publication ceiling. A larger build prints its section sizes and fails before the atomic bundle swap.
 
@@ -142,7 +142,15 @@ With the pinned 2026-09-15 corpus, the complete version-1 English design encodes
 
 The same build compresses the five schema-enveloped dictionary files from 146,687,816 bytes to 34,150,044 bytes, a 76.7% reduction. The complete validated bundle is 73,270,590 bytes, down from 182,699,416 bytes for the preceding uncompressed schema-4 bundle despite the larger English search index.
 
-The current `chinese_dictionary` decoder cannot read schema 5. That project and Syng must migrate separately; do not copy this bundle into an unmodified runtime.
+`chinese_dictionary` 4.0 and later consume schema 5. Older releases cannot read
+this bundle.
+
+The canonical schema-5 lexical types and English format implementation are
+private modules in this generator. `chinese_dictionary` keeps consumer-local
+definitions of the same versioned wire contracts, so its crates.io package has
+no unpublished path dependencies. Schema, normalization, grammar, morphology,
+or container changes require a version bump and coordinated consumer fixture
+validation.
 
 ## Source and license notices
 

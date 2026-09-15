@@ -2,6 +2,13 @@
 
 mod morphology;
 
+use crate::english_search_format::{
+    ALL_DERIVATION_FLAGS, DERIVATION_APOSTROPHE_REMOVED, DERIVATION_GRAMMAR_REDUCED,
+    DERIVATION_HYPHENS_JOINED, DERIVATION_HYPHENS_SEPARATED, DERIVATION_PARENTHETICAL_OMISSION,
+    DERIVATION_SEMICOLON, EnglishSearchIndex, GRAMMAR_VERSION, MORPHOLOGY_VERSION,
+    NORMALIZATION_VERSION, SEARCH_FORMAT_VERSION, Section, SectionCodec, SectionKind,
+    normalize_text, read_uleb128, reduce_optional_grammar, write_container, write_uleb128,
+};
 use crate::model::LexicalUnit;
 use anyhow::{Context, Result, bail};
 use fst::{Map, MapBuilder, Streamer};
@@ -11,13 +18,6 @@ use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::Write;
 use std::path::Path;
-use syng_english_search_format::{
-    ALL_DERIVATION_FLAGS, DERIVATION_APOSTROPHE_REMOVED, DERIVATION_GRAMMAR_REDUCED,
-    DERIVATION_HYPHENS_JOINED, DERIVATION_HYPHENS_SEPARATED, DERIVATION_PARENTHETICAL_OMISSION,
-    DERIVATION_SEMICOLON, EnglishSearchIndex, GRAMMAR_VERSION, MORPHOLOGY_VERSION,
-    NORMALIZATION_VERSION, SEARCH_FORMAT_VERSION, Section, SectionCodec, SectionKind,
-    normalize_text, read_uleb128, reduce_optional_grammar, write_container, write_uleb128,
-};
 
 pub(crate) const MAXIMUM_SIZE: u64 = 22 * 1024 * 1024;
 

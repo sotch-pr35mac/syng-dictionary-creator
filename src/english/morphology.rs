@@ -1,12 +1,12 @@
 //! WordNet-backed noun and verb inflection families.
 
+use crate::english_search_format::normalize_text;
 use anyhow::{Context, Result, bail};
 use flate2::read::GzDecoder;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::File;
 use std::io::Read;
 use std::path::Path;
-use syng_english_search_format::normalize_text;
 
 pub(crate) const WORDNET_REVISION: &str = "Princeton WordNet 3.1";
 pub(crate) const OVERRIDE_REVISION: &str = "1";

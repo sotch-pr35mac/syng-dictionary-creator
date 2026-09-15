@@ -5,6 +5,7 @@
 mod bundle;
 mod combine;
 mod english;
+mod english_search_format;
 mod lock;
 /// Serializable dictionary types and stable lexical identities.
 pub mod model;

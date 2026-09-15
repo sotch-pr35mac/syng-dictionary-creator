@@ -167,6 +167,9 @@ pub fn from_marked(value: &str, han_character_count: Option<usize>) -> Result<Pi
         .split(is_separator)
         .filter(|chunk| !chunk.is_empty())
         .collect::<Vec<_>>();
+    if chunks.is_empty() {
+        return Err(PinyinError::Empty);
+    }
     let mut segmentations = vec![Vec::<Syllable>::new()];
     for chunk in chunks {
         let chunk_segmentations = segment_marked_chunk(chunk)?;
@@ -448,5 +451,12 @@ mod tests {
         assert_eq!(pinyin.numbers, "yi1bu4zuo4er4bu4xiu1");
         assert!(from_marked("m\u{0301}\u{0301}", Some(1)).is_err());
         assert!(from_marked("m\u{0301}\u{0300}", Some(1)).is_err());
+    }
+
+    #[test]
+    fn marked_pinyin_rejects_separator_only_input_as_empty() {
+        for value in ["-", ",", "'", "’", "·", "-,' ’·"] {
+            assert_eq!(from_marked(value, None), Err(PinyinError::Empty));
+        }
     }
 }

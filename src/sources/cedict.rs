@@ -75,6 +75,9 @@ pub(crate) fn parse_line(line: &str, line_number: u64) -> Result<ParsedRecord> {
         }
 
         let alternatives = parse_alternatives(raw_definition)?;
+        if !all_alternative_markers_matched(raw_definition) {
+            bail!("malformed-pronunciation-annotation at line {line_number}");
+        }
         let standalone_alternative = alternatives.len() == 1
             && ALTERNATIVE
                 .find(raw_definition)
@@ -84,12 +87,7 @@ pub(crate) fn parse_line(line: &str, line_number: u64) -> Result<ParsedRecord> {
             continue;
         }
 
-        if (raw_definition.contains("Taiwan pr.") || raw_definition.contains("also pr."))
-            && alternatives.is_empty()
-        {
-            bail!("malformed-pronunciation-annotation at line {line_number}");
-        }
-        if raw_definition.contains("CL:") && !CLASSIFIER.is_match(raw_definition) {
+        if !all_classifier_markers_matched(raw_definition) {
             bail!("malformed-classifier-annotation at line {line_number}");
         }
 
@@ -124,6 +122,26 @@ pub(crate) fn parse_line(line: &str, line_number: u64) -> Result<ParsedRecord> {
         measure_words,
         cited_cedict: false,
         rejection: None,
+    })
+}
+
+/// Requires every classifier marker to start immediately inside a complete annotation match.
+fn all_classifier_markers_matched(value: &str) -> bool {
+    value.match_indices("CL:").all(|(marker_start, _)| {
+        CLASSIFIER
+            .find_iter(value)
+            .any(|annotation| annotation.start() + 1 == marker_start)
+    })
+}
+
+/// Requires every alternative-pronunciation marker to start a complete annotation match.
+fn all_alternative_markers_matched(value: &str) -> bool {
+    ["Taiwan pr.", "also pr."].into_iter().all(|marker| {
+        value.match_indices(marker).all(|(marker_start, _)| {
+            ALTERNATIVE
+                .find_iter(value)
+                .any(|annotation| annotation.start() == marker_start)
+        })
     })
 }
 
@@ -273,6 +291,25 @@ mod tests {
             let record =
                 parse_line(&format!("呣 呣 [m{tone}] /syllabic nasal/"), line_number).unwrap();
             assert_eq!(record.pinyin.unwrap().numbers, format!("m{tone}"));
+        }
+    }
+
+    #[test]
+    fn rejects_malformed_classifier_after_valid_inline_annotation() {
+        assert!(
+            parse_line(
+                "甲 甲 [jia3] /first (CL:個|个[ge4]) and then (CL:broken/",
+                1,
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn rejects_malformed_pronunciation_after_valid_inline_annotation() {
+        for marker in ["Taiwan pr.", "also pr."] {
+            let line = format!("甲 甲 [jia3] /first ({marker} [jia2]) and {marker} malformed/");
+            assert!(parse_line(&line, 1).is_err());
         }
     }
 }

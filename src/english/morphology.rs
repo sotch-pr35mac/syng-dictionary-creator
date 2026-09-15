@@ -73,7 +73,9 @@ pub(crate) fn build(path: &Path, corpus: &BTreeSet<String>) -> Result<Morphology
             values.extend(exceptional.iter().cloned());
             match pos {
                 EnglishPos::Noun => {
-                    values.insert(noun_plural(&lemma));
+                    if exceptional.is_empty() {
+                        values.insert(noun_plural(&lemma));
+                    }
                 }
                 EnglishPos::Verb => add_regular_verb_forms(values, &lemma, &exceptional),
             }
@@ -278,13 +280,13 @@ mod tests {
         for (name, bytes) in [
             (
                 "dict/index.noun",
-                b"  header\nsaw n 1 0 1 1 00000001\nshop n 1 0 1 1 00000002\n".as_slice(),
+                b"  header\nchild n 1 0 1 1 00000001\nsaw n 1 0 1 1 00000002\nshop n 1 0 1 1 00000003\n".as_slice(),
             ),
             (
                 "dict/index.verb",
                 b"  header\nrun v 1 0 1 1 00000001\nbe v 1 0 1 1 00000002\nsee v 1 0 1 1 00000003\n".as_slice(),
             ),
-            ("dict/noun.exc", b"".as_slice()),
+            ("dict/noun.exc", b"children child\n".as_slice()),
             (
                 "dict/verb.exc",
                 b"ran run\nrunning run\nsaw see\nwas be\n".as_slice(),
@@ -300,7 +302,7 @@ mod tests {
 
         let morphology = build(
             &path,
-            &BTreeSet::from_iter(["running", "is", "saw", "shop"].map(str::to_owned)),
+            &BTreeSet::from_iter(["children", "running", "is", "saw", "shop"].map(str::to_owned)),
         )
         .unwrap();
         let analyses = |surface: &str| {
@@ -320,6 +322,9 @@ mod tests {
         let saw = analyses("saw");
         assert_eq!(saw.len(), 2);
         assert_ne!(saw[0].pos, saw[1].pos);
+        assert_eq!(analyses("children")[0].lemma, "child");
+        assert!(!morphology.surfaces.contains_key("childs"));
+        assert!(morphology.surfaces.contains_key("shops"));
         assert!(!morphology.surfaces.contains_key("runner"));
     }
 }

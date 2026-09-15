@@ -160,8 +160,6 @@ fn write_temporary_bundle(
 ) -> Result<()> {
     let mut data = DataMap::new();
     let mut identity = IdentityIndex::new();
-    let mut simplified = SearchIndex::new();
-    let mut traditional = SearchIndex::new();
     let mut pinyin = SearchIndex::new();
     let mut chinese_terms = BTreeSet::new();
     let mut wiktionary_entries = BTreeMap::new();
@@ -180,8 +178,6 @@ fn write_temporary_bundle(
             wiktionary_entries.insert(unit.id.clone(), urls.into_iter().collect());
         }
         identity.insert(unit.id.clone(), runtime_key);
-        insert_index(&mut simplified, unit.simplified.clone(), runtime_key);
-        insert_index(&mut traditional, unit.traditional.clone(), runtime_key);
         chinese_terms.insert(unit.simplified.clone());
         chinese_terms.insert(unit.traditional.clone());
         for key in pinyin_keys(&unit) {
@@ -189,8 +185,7 @@ fn write_temporary_bundle(
         }
         data.insert(runtime_key, unit);
     }
-    sort_index_values(&mut simplified);
-    sort_index_values(&mut traditional);
+    let (simplified, traditional) = headword_indexes(&data);
     sort_index_values(&mut pinyin);
 
     write_binary(directory, "data.dictionary", &data)?;
@@ -443,6 +438,35 @@ fn sort_index_values(index: &mut SearchIndex) {
     }
 }
 
+/// Reconstructs both headword indexes from their authoritative runtime records.
+fn headword_indexes(data: &DataMap) -> (SearchIndex, SearchIndex) {
+    let mut simplified = SearchIndex::new();
+    let mut traditional = SearchIndex::new();
+    for (runtime_key, unit) in data {
+        insert_index(&mut simplified, unit.simplified.clone(), *runtime_key);
+        insert_index(&mut traditional, unit.traditional.clone(), *runtime_key);
+    }
+    sort_index_values(&mut simplified);
+    sort_index_values(&mut traditional);
+    (simplified, traditional)
+}
+
+/// Requires exact headword coverage and associations for every runtime record.
+fn validate_headword_indexes(
+    data: &DataMap,
+    simplified: &SearchIndex,
+    traditional: &SearchIndex,
+) -> Result<()> {
+    let (expected_simplified, expected_traditional) = headword_indexes(data);
+    if *simplified != expected_simplified {
+        bail!("simplified headword index is inconsistent with data");
+    }
+    if *traditional != expected_traditional {
+        bail!("traditional headword index is inconsistent with data");
+    }
+    Ok(())
+}
+
 /// Serializes and deterministically compresses one schema-enveloped bincode payload.
 fn write_binary<T: Serialize>(directory: &Path, name: &str, payload: &T) -> Result<()> {
     if !name.ends_with(".dictionary") {
@@ -616,6 +640,7 @@ pub fn validate_bundle(directory: &Path) -> Result<()> {
     if identity.len() != data.len() {
         bail!("identity index and data have different record counts");
     }
+    validate_headword_indexes(&data, &simplified, &traditional)?;
     if wiktionary_attribution
         .entries
         .keys()
@@ -674,21 +699,15 @@ pub fn validate_bundle(directory: &Path) -> Result<()> {
             }
         }
     }
-    for (name, index) in [
-        ("simplified", &simplified),
-        ("traditional", &traditional),
-        ("pinyin", &pinyin),
-    ] {
-        for values in index.values() {
-            if values.windows(2).any(|pair| pair[0] >= pair[1]) {
-                bail!("{name} index values are not strictly sorted");
-            }
-            if values
-                .iter()
-                .any(|runtime_key| !runtime_keys.contains(runtime_key))
-            {
-                bail!("{name} index contains a missing runtime key");
-            }
+    for values in pinyin.values() {
+        if values.windows(2).any(|pair| pair[0] >= pair[1]) {
+            bail!("pinyin index values are not strictly sorted");
+        }
+        if values
+            .iter()
+            .any(|runtime_key| !runtime_keys.contains(runtime_key))
+        {
+            bail!("pinyin index contains a missing runtime key");
         }
     }
     Set::new(fs::read(directory.join("chinese.fst"))?).context("validate Chinese FST")?;
@@ -944,6 +963,77 @@ mod tests {
                 fs::read(second.join(name)).unwrap()
             );
         }
+    }
+
+    #[test]
+    fn headword_indexes_require_exact_keys_associations_and_coverage() {
+        let first = unit();
+        let mut second = unit();
+        second.simplified = "火".to_owned();
+        second.traditional = "火".to_owned();
+        second.pinyin = from_numbered("huo3").unwrap();
+        second.id = LexicalId::new(
+            &second.simplified,
+            &second.traditional,
+            &second.pinyin.numbers,
+        )
+        .unwrap();
+        let data = DataMap::from([(0, first), (1, second)]);
+        let (simplified, traditional) = headword_indexes(&data);
+
+        validate_headword_indexes(&data, &simplified, &traditional).unwrap();
+        assert!(validate_headword_indexes(&data, &traditional, &simplified).is_err());
+
+        let mut wrong_association = simplified.clone();
+        wrong_association.insert("烟火".to_owned(), vec![1]);
+        assert!(validate_headword_indexes(&data, &wrong_association, &traditional).is_err());
+
+        let mut omitted = simplified.clone();
+        omitted.remove("烟火");
+        assert!(validate_headword_indexes(&data, &omitted, &traditional).is_err());
+
+        let mut stray_key = simplified.clone();
+        stray_key.insert(String::new(), Vec::new());
+        assert!(validate_headword_indexes(&data, &stray_key, &traditional).is_err());
+    }
+
+    #[test]
+    fn bundle_rejects_swapped_headword_artifacts_with_updated_checksums() {
+        let temporary = TempDir::new().unwrap();
+        let output = temporary.path().join("bundle");
+        let lock = fixture_lock(temporary.path());
+        write_bundle(
+            &output,
+            temporary.path(),
+            &lock,
+            vec![unit()],
+            BuildReport::default(),
+        )
+        .unwrap();
+
+        let simplified_path = output.join("simplified.dictionary.zst");
+        let traditional_path = output.join("traditional.dictionary.zst");
+        let simplified_bytes = fs::read(&simplified_path).unwrap();
+        let traditional_bytes = fs::read(&traditional_path).unwrap();
+        fs::write(&simplified_path, traditional_bytes).unwrap();
+        fs::write(&traditional_path, simplified_bytes).unwrap();
+
+        let updated_checksums = checksums(&output, CHECKSUMMED_FILES).unwrap();
+        let mut manifest: Manifest =
+            serde_json::from_slice(&fs::read(output.join("manifest.json")).unwrap()).unwrap();
+        manifest.file_checksums = updated_checksums.clone();
+        write_json(output.join("manifest.json"), &manifest).unwrap();
+        let mut report: ReportFile =
+            serde_json::from_slice(&fs::read(output.join("build-report.json")).unwrap()).unwrap();
+        report.file_checksums = updated_checksums;
+        write_json(output.join("build-report.json"), &report).unwrap();
+
+        let error = validate_bundle(&output).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("simplified headword index is inconsistent with data")
+        );
     }
 
     #[test]

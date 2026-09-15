@@ -1,7 +1,7 @@
 //! Source-lock loading, licensing gates, downloading, and checksum verification.
 
 use crate::BuildOptions;
-use crate::model::{SCHEMA_VERSION, Source};
+use crate::model::SCHEMA_VERSION;
 use anyhow::{Context, Result, bail};
 use flate2::Compression;
 use flate2::write::GzEncoder;
@@ -21,7 +21,7 @@ pub(crate) struct SourceLock {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub(crate) struct SourcePin {
-    pub source: Source,
+    pub source: LockedArtifactSource,
     pub role: String,
     pub revision: String,
     pub url: String,
@@ -36,6 +36,26 @@ pub(crate) struct SourcePin {
     pub attribution: String,
     pub modifications: String,
     pub parser_version: u32,
+}
+
+/// Build-input identity, deliberately separate from published definition provenance.
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub(crate) enum LockedArtifactSource {
+    CcCedict,
+    ChineseNotes,
+    Wiktionary,
+    PrincetonWordNet,
+}
+
+impl From<crate::model::Source> for LockedArtifactSource {
+    fn from(source: crate::model::Source) -> Self {
+        match source {
+            crate::model::Source::CcCedict => Self::CcCedict,
+            crate::model::Source::ChineseNotes => Self::ChineseNotes,
+            crate::model::Source::Wiktionary => Self::Wiktionary,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -88,8 +108,9 @@ fn verify_all_cached(source_lock: &SourceLock, cache_directory: &Path) -> Result
 fn validate_license_metadata(source_lock: &SourceLock) -> Result<()> {
     for pin in &source_lock.artifacts {
         let expected_license = match pin.source {
-            Source::CcCedict | Source::Wiktionary => "CC-BY-SA-4.0",
-            Source::ChineseNotes => "CC-BY-SA-3.0",
+            LockedArtifactSource::CcCedict | LockedArtifactSource::Wiktionary => "CC-BY-SA-4.0",
+            LockedArtifactSource::ChineseNotes => "CC-BY-SA-3.0",
+            LockedArtifactSource::PrincetonWordNet => "WordNet-3.0",
         };
         if pin.license != expected_license {
             bail!(
@@ -358,7 +379,7 @@ mod tests {
 
     fn reviewed_pin() -> SourcePin {
         SourcePin {
-            source: Source::CcCedict,
+            source: LockedArtifactSource::CcCedict,
             role: "dictionary".to_owned(),
             revision: "fixture".to_owned(),
             url: "https://example.com/source".to_owned(),

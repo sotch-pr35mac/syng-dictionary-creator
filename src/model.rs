@@ -6,7 +6,7 @@ use std::fmt;
 use unicode_normalization::UnicodeNormalization;
 
 /// Incompatible schema version wrapped around every binary artifact.
-pub const SCHEMA_VERSION: u32 = 4;
+pub const SCHEMA_VERSION: u32 = 5;
 /// Version prefix used by persistent lexical identifiers.
 pub const IDENTITY_VERSION: u8 = 1;
 

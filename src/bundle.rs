@@ -1,44 +1,46 @@
 //! Serialization, licensing notices, publication, and validation of output bundles.
 
-use crate::lock::SourceLock;
+use crate::english::{self, EnglishSearchReport};
+use crate::lock::{LockedArtifactSource, SourceLock};
 use crate::model::{BinaryEnvelope, LexicalId, LexicalUnit, SCHEMA_VERSION, Sourced};
 use crate::pinyin::from_numbered;
 use crate::sources::BuildReport;
 use anyhow::{Context, Result, bail};
 use fst::Set;
 use percent_encoding::{NON_ALPHANUMERIC, utf8_percent_encode};
-use regex::Regex;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
-use std::fs::{self, File};
-use std::io::{BufWriter, Write};
+use std::fs;
+use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::sync::LazyLock;
 use std::time::Instant;
 
 const CHECKSUMMED_FILES: &[&str] = &[
-    "data.dictionary",
-    "simplified.dictionary",
-    "traditional.dictionary",
-    "pinyin.dictionary",
-    "english.dictionary",
-    "identity.dictionary",
+    "data.dictionary.zst",
+    "simplified.dictionary.zst",
+    "traditional.dictionary.zst",
+    "pinyin.dictionary.zst",
+    "english.search.zst",
+    "identity.dictionary.zst",
     "chinese.fst",
     "LICENSE-DATA.txt",
     "NOTICE.md",
     "wiktionary-attribution.json",
 ];
+const DICTIONARY_FILES: &[&str] = &[
+    "data.dictionary",
+    "simplified.dictionary",
+    "traditional.dictionary",
+    "pinyin.dictionary",
+    "identity.dictionary",
+];
+const ZSTD_LEVEL: i32 = 19;
 const BUNDLE_LICENSE: &str = "CC-BY-SA-4.0";
 const BUNDLE_LICENSE_URL: &str = "https://creativecommons.org/licenses/by-sa/4.0/";
 const BUNDLE_MODIFICATIONS: &str = "Syng Dictionary Creator parsed, normalized, filtered, structurally annotated, deduplicated exact matches, merged source material, assigned stable identities, and built search indexes. It excluded Wiktionary quotations.";
 const WIKTIONARY_ATTRIBUTION_EXPLANATION: &str = "Each key identifies a LexicalUnit containing English Wiktionary material. The linked entry pages provide the contributor history used for author attribution.";
 const LICENSE_DATA_TEXT: &str = include_str!("../LICENSE-DATA");
-
-static DIGIT_OR_PUNCTUATION: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"\d|\p{P}").expect("English lookup regex"));
-static FIRST_PARENTHETICAL: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"\([^)]*\)").expect("parenthetical regex"));
 
 #[derive(Debug, Serialize, Deserialize)]
 struct Manifest {
@@ -50,12 +52,13 @@ struct Manifest {
     source_pins: Vec<ManifestSource>,
     record_counts: BTreeMap<String, u64>,
     file_checksums: BTreeMap<String, String>,
+    english_search: EnglishSearchReport,
     attribution_requirement: String,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 struct ManifestSource {
-    source: crate::model::Source,
+    source: LockedArtifactSource,
     role: String,
     revision: String,
     url: String,
@@ -81,6 +84,7 @@ struct ReportFile {
     schema_version: u32,
     report: BuildReport,
     file_checksums: BTreeMap<String, String>,
+    english_search: EnglishSearchReport,
 }
 
 type RuntimeKey = u32;
@@ -91,6 +95,7 @@ type IdentityIndex = BTreeMap<LexicalId, RuntimeKey>;
 /// Writes, validates, and atomically publishes a complete bundle directory.
 pub(crate) fn write_bundle(
     output_directory: &Path,
+    cache_directory: &Path,
     source_lock: &SourceLock,
     lexical_units: Vec<LexicalUnit>,
     report: BuildReport,
@@ -117,13 +122,17 @@ pub(crate) fn write_bundle(
         "Writing {lexical_unit_count} lexical units to temporary bundle {}...",
         temporary_directory.display()
     );
-    let bundle_result =
-        write_temporary_bundle(&temporary_directory, source_lock, lexical_units, report).and_then(
-            |()| {
-                eprintln!("Validating temporary bundle...");
-                validate_bundle(&temporary_directory)
-            },
-        );
+    let bundle_result = write_temporary_bundle(
+        &temporary_directory,
+        cache_directory,
+        source_lock,
+        lexical_units,
+        report,
+    )
+    .and_then(|()| {
+        eprintln!("Validating temporary bundle...");
+        validate_bundle(&temporary_directory)
+    });
     if let Err(error) = bundle_result {
         let _ = fs::remove_dir_all(&temporary_directory);
         return Err(error);
@@ -142,6 +151,7 @@ pub(crate) fn write_bundle(
 /// Builds every ordered artifact inside an unpublished temporary directory.
 fn write_temporary_bundle(
     directory: &Path,
+    cache_directory: &Path,
     source_lock: &SourceLock,
     lexical_units: Vec<LexicalUnit>,
     report: BuildReport,
@@ -151,7 +161,6 @@ fn write_temporary_bundle(
     let mut simplified = SearchIndex::new();
     let mut traditional = SearchIndex::new();
     let mut pinyin = SearchIndex::new();
-    let mut english = SearchIndex::new();
     let mut chinese_terms = BTreeSet::new();
     let mut wiktionary_entries = BTreeMap::new();
 
@@ -176,23 +185,60 @@ fn write_temporary_bundle(
         for key in pinyin_keys(&unit) {
             insert_index(&mut pinyin, key, runtime_key);
         }
-        for definition in &unit.english {
-            for key in english_keys(&definition.gloss.value) {
-                insert_index(&mut english, key, runtime_key);
-            }
-        }
         data.insert(runtime_key, unit);
     }
     sort_index_values(&mut simplified);
     sort_index_values(&mut traditional);
     sort_index_values(&mut pinyin);
-    sort_index_values(&mut english);
 
     write_binary(directory, "data.dictionary", &data)?;
     write_binary(directory, "simplified.dictionary", &simplified)?;
     write_binary(directory, "traditional.dictionary", &traditional)?;
     write_binary(directory, "pinyin.dictionary", &pinyin)?;
-    write_binary(directory, "english.dictionary", &english)?;
+    let wordnet_path = crate::sources::artifact_path(
+        source_lock,
+        cache_directory,
+        LockedArtifactSource::PrincetonWordNet,
+        "morphology",
+    )?;
+    eprintln!("Compiling English lexical search...");
+    let english_search = english::build(&data, &wordnet_path)?;
+    for (section, bytes) in &english_search.report.section_raw_bytes {
+        eprintln!("  {section}: {bytes} bytes");
+    }
+    eprintln!(
+        "English search records: {} tokens, {} texts, {} bindings, {} occurrences, {} direct hits, {} morphology families, {} morphology surfaces",
+        english_search.report.tokens,
+        english_search.report.texts,
+        english_search.report.bindings,
+        english_search.report.occurrences,
+        english_search.report.direct_hits,
+        english_search.report.morphology_families,
+        english_search.report.morphology_surfaces,
+    );
+    let ratio = 100.0 * english_search.report.compressed_bytes as f64
+        / english_search.report.uncompressed_bytes.max(1) as f64;
+    eprintln!(
+        "English search: {} -> {} bytes ({ratio:.1}% compressed), sha256 {}",
+        english_search.report.uncompressed_bytes,
+        english_search.report.compressed_bytes,
+        english_search.report.compressed_sha256,
+    );
+    let decoded = zstd::stream::decode_all(english_search.compressed.as_slice())?;
+    if decoded != english_search.raw {
+        bail!("English search compression did not round-trip");
+    }
+    if english_search.report.compressed_bytes > english::MAXIMUM_SIZE {
+        bail!(
+            "english.search.zst is {} bytes, above the 22 MiB publication gate",
+            english_search.report.compressed_bytes
+        );
+    }
+    fs::write(
+        directory.join("english.search.zst"),
+        &english_search.compressed,
+    )
+    .context("write english.search.zst")?;
     write_binary(directory, "identity.dictionary", &identity)?;
     write_fst(directory, chinese_terms)?;
     fs::write(directory.join("LICENSE-DATA.txt"), LICENSE_DATA_TEXT)
@@ -256,6 +302,7 @@ fn write_temporary_bundle(
         source_pins,
         record_counts,
         file_checksums: file_checksums.clone(),
+        english_search: english_search.report.clone(),
         attribution_requirement: "Redistributions must remain under CC-BY-SA-4.0 and include LICENSE-DATA.txt, NOTICE.md, manifest.json, and wiktionary-attribution.json. Do not imply endorsement by any upstream project or contributor."
             .to_owned(),
     };
@@ -266,6 +313,7 @@ fn write_temporary_bundle(
             schema_version: SCHEMA_VERSION,
             report,
             file_checksums,
+            english_search: english_search.report,
         },
     )?;
     Ok(())
@@ -377,25 +425,6 @@ fn add_pinyin_keys(keys: &mut BTreeSet<String>, pinyin: &crate::model::Pinyin) {
     );
 }
 
-/// Reproduces the intentionally limited legacy English-gloss lookup behavior.
-fn english_keys(gloss: &str) -> BTreeSet<String> {
-    let without_parenthetical = FIRST_PARENTHETICAL.replace(gloss, "");
-    let normalized = DIGIT_OR_PUNCTUATION
-        .replace_all(&without_parenthetical, "")
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ")
-        .to_lowercase();
-    let mut keys = BTreeSet::new();
-    if !normalized.is_empty() {
-        keys.insert(normalized.replace(' ', "%20"));
-        if let Some(verb) = normalized.strip_prefix("to ") {
-            keys.insert(verb.replace(' ', "%20"));
-        }
-    }
-    keys
-}
-
 /// Appends a runtime key to one lookup term before final sorting.
 fn insert_index(index: &mut SearchIndex, key: String, runtime_key: RuntimeKey) {
     index.entry(key).or_default().push(runtime_key);
@@ -409,21 +438,36 @@ fn sort_index_values(index: &mut SearchIndex) {
     }
 }
 
-/// Serializes one deterministic bincode payload inside its schema envelope.
+/// Serializes and deterministically compresses one schema-enveloped bincode payload.
 fn write_binary<T: Serialize>(directory: &Path, name: &str, payload: &T) -> Result<()> {
-    let path = directory.join(name);
-    let file = File::create(&path).with_context(|| format!("create {}", path.display()))?;
-    let mut writer = BufWriter::new(file);
-    bincode::serialize_into(
-        &mut writer,
-        &BinaryEnvelope {
-            schema_version: SCHEMA_VERSION,
-            payload,
-        },
-    )
-    .with_context(|| format!("serialize {}", path.display()))?;
-    writer.flush()?;
+    if !name.ends_with(".dictionary") {
+        bail!("binary artifact name must end in .dictionary");
+    }
+    let raw = bincode::serialize(&BinaryEnvelope {
+        schema_version: SCHEMA_VERSION,
+        payload,
+    })
+    .with_context(|| format!("serialize {name}"))?;
+    let compressed = compress_zstd(&raw)?;
+    let archive_name = format!("{name}.zst");
+    fs::write(directory.join(&archive_name), &compressed)
+        .with_context(|| format!("write {archive_name}"))?;
+    let ratio = 100.0 * compressed.len() as f64 / raw.len().max(1) as f64;
+    eprintln!(
+        "{archive_name}: {} -> {} bytes ({ratio:.1}% compressed)",
+        raw.len(),
+        compressed.len()
+    );
     Ok(())
+}
+
+fn compress_zstd(raw: &[u8]) -> Result<Vec<u8>> {
+    let mut encoder = zstd::stream::write::Encoder::new(Vec::new(), ZSTD_LEVEL)?;
+    encoder.include_checksum(true)?;
+    encoder.include_contentsize(true)?;
+    encoder.set_pledged_src_size(Some(u64::try_from(raw.len())?))?;
+    encoder.write_all(raw)?;
+    Ok(encoder.finish()?)
 }
 
 /// Writes the sorted Chinese-term finite-state set.
@@ -451,6 +495,11 @@ pub fn validate_bundle(directory: &Path) -> Result<()> {
     .context("parse manifest.json")?;
     if manifest.schema_version != SCHEMA_VERSION {
         bail!("unsupported manifest schema {}", manifest.schema_version);
+    }
+    for name in DICTIONARY_FILES {
+        if directory.join(name).exists() {
+            bail!("legacy uncompressed artifact {name} must not be published");
+        }
     }
     if manifest.bundle_license != BUNDLE_LICENSE
         || manifest.bundle_license_url != BUNDLE_LICENSE_URL
@@ -513,7 +562,33 @@ pub fn validate_bundle(directory: &Path) -> Result<()> {
     let simplified: SearchIndex = read_binary(directory, "simplified.dictionary")?;
     let traditional: SearchIndex = read_binary(directory, "traditional.dictionary")?;
     let pinyin: SearchIndex = read_binary(directory, "pinyin.dictionary")?;
-    let english: SearchIndex = read_binary(directory, "english.dictionary")?;
+    if directory.join("english.dictionary").exists() {
+        bail!("legacy english.dictionary must not be published");
+    }
+    let compressed_english =
+        fs::read(directory.join("english.search.zst")).context("read english.search.zst")?;
+    let raw_english = zstd::stream::decode_all(compressed_english.as_slice())
+        .context("decompress english.search.zst")?;
+    english::validate_raw(&raw_english, u32::try_from(data.len())?)?;
+    if manifest.english_search.compressed_bytes != compressed_english.len() as u64
+        || manifest.english_search.uncompressed_bytes != raw_english.len() as u64
+        || manifest.english_search.compressed_sha256
+            != format!("{:x}", Sha256::digest(&compressed_english))
+        || manifest.english_search.uncompressed_sha256
+            != format!("{:x}", Sha256::digest(&raw_english))
+    {
+        bail!("English search manifest metadata does not match artifact");
+    }
+    let report_file: ReportFile = serde_json::from_slice(
+        &fs::read(directory.join("build-report.json")).context("read build-report.json")?,
+    )
+    .context("parse build-report.json")?;
+    if report_file.schema_version != SCHEMA_VERSION
+        || report_file.file_checksums != manifest.file_checksums
+        || report_file.english_search != manifest.english_search
+    {
+        bail!("build report is inconsistent with the manifest");
+    }
     let wiktionary_attribution: WiktionaryAttribution = serde_json::from_slice(
         &fs::read(directory.join("wiktionary-attribution.json"))
             .context("read wiktionary-attribution.json")?,
@@ -592,7 +667,6 @@ pub fn validate_bundle(directory: &Path) -> Result<()> {
         ("simplified", &simplified),
         ("traditional", &traditional),
         ("pinyin", &pinyin),
-        ("english", &english),
     ] {
         for values in index.values() {
             if values.windows(2).any(|pair| pair[0] >= pair[1]) {
@@ -614,8 +688,9 @@ pub fn validate_bundle(directory: &Path) -> Result<()> {
 fn validate_manifest_licensing(manifest: &Manifest) -> Result<()> {
     for source in &manifest.source_pins {
         let expected_license = match source.source {
-            crate::model::Source::CcCedict | crate::model::Source::Wiktionary => "CC-BY-SA-4.0",
-            crate::model::Source::ChineseNotes => "CC-BY-SA-3.0",
+            LockedArtifactSource::CcCedict | LockedArtifactSource::Wiktionary => "CC-BY-SA-4.0",
+            LockedArtifactSource::ChineseNotes => "CC-BY-SA-3.0",
+            LockedArtifactSource::PrincetonWordNet => "WordNet-3.0",
         };
         if source.license != expected_license {
             bail!("manifest contains an unreviewed source license");
@@ -680,10 +755,13 @@ fn require_sources<T>(value: &Sourced<T>, kind: &str) -> Result<()> {
 
 /// Reads one binary payload and enforces its schema envelope.
 fn read_binary<T: DeserializeOwned>(directory: &Path, name: &str) -> Result<T> {
-    let path = directory.join(name);
-    let file = File::open(&path).with_context(|| format!("open {}", path.display()))?;
-    let envelope: BinaryEnvelope<T> = bincode::deserialize_from(file)
-        .with_context(|| format!("deserialize {}", path.display()))?;
+    let archive_name = format!("{name}.zst");
+    let path = directory.join(&archive_name);
+    let compressed = fs::read(&path).with_context(|| format!("read {}", path.display()))?;
+    let raw = zstd::stream::decode_all(compressed.as_slice())
+        .with_context(|| format!("decompress {}", path.display()))?;
+    let envelope: BinaryEnvelope<T> =
+        bincode::deserialize(&raw).with_context(|| format!("deserialize {}", path.display()))?;
     if envelope.schema_version != SCHEMA_VERSION {
         bail!(
             "{} has unsupported schema {}",
@@ -768,10 +846,53 @@ mod tests {
         }
     }
 
-    fn empty_lock() -> SourceLock {
+    fn fixture_lock(directory: &Path) -> SourceLock {
+        let path = directory.join("wordnet.tar.gz");
+        let file = fs::File::create(path).unwrap();
+        let encoder = flate2::write::GzEncoder::new(file, flate2::Compression::default());
+        let mut archive = tar::Builder::new(encoder);
+        for (name, bytes) in [
+            (
+                "dict/index.noun",
+                b"  header\nshop n 1 0 1 1 00000001\n".as_slice(),
+            ),
+            (
+                "dict/index.verb",
+                b"  header\nrun v 1 0 1 1 00000001\nbe v 1 0 1 1 00000002\n".as_slice(),
+            ),
+            ("dict/noun.exc", b"men man\n".as_slice()),
+            (
+                "dict/verb.exc",
+                b"ran run\nrunning run\nwas be\n".as_slice(),
+            ),
+        ] {
+            let mut header = tar::Header::new_gnu();
+            header.set_size(bytes.len() as u64);
+            header.set_mode(0o644);
+            header.set_cksum();
+            archive.append_data(&mut header, name, bytes).unwrap();
+        }
+        archive.into_inner().unwrap().finish().unwrap();
         SourceLock {
             schema_version: SCHEMA_VERSION,
-            artifacts: Vec::new(),
+            artifacts: vec![crate::lock::SourcePin {
+                source: LockedArtifactSource::PrincetonWordNet,
+                role: "morphology".to_owned(),
+                revision: "fixture".to_owned(),
+                url: "https://example.com/wordnet".to_owned(),
+                cache_file: "wordnet.tar.gz".to_owned(),
+                download_sha256: "0".repeat(64),
+                content_sha256: "0".repeat(64),
+                preparation: crate::lock::Preparation::Plain,
+                license: "WordNet-3.0".to_owned(),
+                license_url: "https://wordnet.princeton.edu/license-and-commercial-use".to_owned(),
+                license_evidence_url: "https://wordnet.princeton.edu/license-and-commercial-use"
+                    .to_owned(),
+                copyright_notice: "Copyright Princeton University.".to_owned(),
+                attribution: "Princeton WordNet 3.1.".to_owned(),
+                modifications: "Parsed noun and verb morphology.".to_owned(),
+                parser_version: 1,
+            }],
         }
     }
 
@@ -780,9 +901,28 @@ mod tests {
         let temporary = TempDir::new().unwrap();
         let first = temporary.path().join("first");
         let second = temporary.path().join("second");
-        write_bundle(&first, &empty_lock(), vec![unit()], BuildReport::default()).unwrap();
-        write_bundle(&second, &empty_lock(), vec![unit()], BuildReport::default()).unwrap();
+        let lock = fixture_lock(temporary.path());
+        write_bundle(
+            &first,
+            temporary.path(),
+            &lock,
+            vec![unit()],
+            BuildReport::default(),
+        )
+        .unwrap();
+        write_bundle(
+            &second,
+            temporary.path(),
+            &lock,
+            vec![unit()],
+            BuildReport::default(),
+        )
+        .unwrap();
         validate_bundle(&first).unwrap();
+        for name in DICTIONARY_FILES {
+            assert!(!first.join(name).exists());
+            assert!(first.join(format!("{name}.zst")).is_file());
+        }
         for name in CHECKSUMMED_FILES
             .iter()
             .copied()
@@ -800,19 +940,22 @@ mod tests {
         let temporary = TempDir::new().unwrap();
         let output = temporary.path().join("bundle");
         let repeated_output = temporary.path().join("repeated-bundle");
+        let lock = fixture_lock(temporary.path());
         let mut wiktionary_unit = unit();
         wiktionary_unit.english[0].gloss.sources = vec![Source::Wiktionary];
         let lexical_id = wiktionary_unit.id.clone();
         write_bundle(
             &output,
-            &empty_lock(),
+            temporary.path(),
+            &lock,
             vec![wiktionary_unit.clone()],
             BuildReport::default(),
         )
         .unwrap();
         write_bundle(
             &repeated_output,
-            &empty_lock(),
+            temporary.path(),
+            &lock,
             vec![wiktionary_unit],
             BuildReport::default(),
         )
@@ -852,6 +995,7 @@ mod tests {
     fn pinyin_dictionary_indexes_entity_and_definition_alternatives() {
         let temporary = TempDir::new().unwrap();
         let output = temporary.path().join("bundle");
+        let lock = fixture_lock(temporary.path());
         let mut lexical_unit = unit();
         let entity_alternative = from_numbered("yan1 huo5").unwrap();
         let definition_alternative = from_numbered("yan1 huo4").unwrap();
@@ -875,7 +1019,8 @@ mod tests {
 
         write_bundle(
             &output,
-            &empty_lock(),
+            temporary.path(),
+            &lock,
             vec![lexical_unit],
             BuildReport::default(),
         )
@@ -903,16 +1048,5 @@ mod tests {
                 assert_eq!(pinyin.get(&lookup_key), Some(&vec![runtime_key]));
             }
         }
-    }
-
-    #[test]
-    fn english_lookup_retains_non_full_text_behavior() {
-        assert_eq!(
-            english_keys("to set off fireworks (common)"),
-            BTreeSet::from([
-                "set%20off%20fireworks".to_owned(),
-                "to%20set%20off%20fireworks".to_owned()
-            ])
-        );
     }
 }

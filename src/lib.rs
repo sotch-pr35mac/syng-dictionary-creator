@@ -4,6 +4,7 @@
 
 mod bundle;
 mod combine;
+mod english;
 mod lock;
 /// Serializable dictionary types and stable lexical identities.
 pub mod model;
@@ -63,6 +64,7 @@ pub fn build(options: &BuildOptions) -> Result<()> {
 
     bundle::write_bundle(
         &options.output_directory,
+        &options.cache_directory,
         &source_lock,
         lexical_units,
         report,

@@ -1,6 +1,6 @@
 # Syng Dictionary Creator
 
-This crate builds Syng's Chinese–English dictionary bundle from pinned snapshots of CC-CEDICT, Chinese Notes, and English Wiktionary. Version 4 is an intentionally incompatible replacement for the legacy CC-CEDICT-only format.
+This crate builds Syng's Chinese–English dictionary bundle from pinned snapshots of CC-CEDICT, Chinese Notes, English Wiktionary, and Princeton WordNet. Version 5 adds the supporting index for English lexical search and is intentionally incompatible with earlier bundles.
 
 The pipeline is written in Rust, is offline by default, keeps source attribution on every published assertion, and produces byte-for-byte deterministic artifacts from the same verified inputs.
 
@@ -35,6 +35,10 @@ cargo deny check licenses
 ```
 
 `deny.toml` contains the reviewed GPL-compatible license allowlist. Run this check whenever `Cargo.lock` changes.
+
+## English search design
+
+[English search architecture](docs/english-search-architecture.md) specifies the finalized generator-side normalization, extraction, morphology, and binary format, plus the future consumer responsibilities. This repository generates the supporting data but does not implement production query planning or ranking.
 
 ## Canonical schema
 
@@ -117,11 +121,11 @@ Marked Pinyin is converted only when the reviewed syllable vocabulary yields one
 
 The published bundle contains:
 
-- `data.dictionary`: deterministic runtime `u32` keys to `LexicalUnit`
-- `simplified.dictionary` and `traditional.dictionary`: normalized headword indexes
-- `pinyin.dictionary`: primary and embedded-alternate pronunciation lookup forms
-- `english.dictionary`: the existing non-full-text normalized gloss lookup
-- `identity.dictionary`: persistent `LexicalId` to runtime key
+- `data.dictionary.zst`: deterministic runtime `u32` keys to `LexicalUnit`
+- `simplified.dictionary.zst` and `traditional.dictionary.zst`: normalized headword indexes
+- `pinyin.dictionary.zst`: primary and embedded-alternate pronunciation lookup forms
+- `english.search.zst`: the complete versioned English lexical-search container, compressed as one deterministic Zstandard frame
+- `identity.dictionary.zst`: persistent `LexicalId` to runtime key
 - `chinese.fst`: deduplicated simplified/traditional tokenizer terms
 - `manifest.json`: source pins, licenses, attribution, counts, schema, and checksums
 - `build-report.json`: admitted, suppressed, rejected, and source-specific diagnostic counts
@@ -129,9 +133,15 @@ The published bundle contains:
 - `NOTICE.md`: source copyrights, attribution, license evidence, and modification notices
 - `wiktionary-attribution.json`: lexical identities to English Wiktionary entry pages and contributor histories
 
-Every binary `.dictionary` file carries an explicit schema-version envelope. Ordered maps and sorted lists make runtime-key assignment and serialization deterministic.
+Every `.dictionary.zst` file contains a schema-versioned bincode envelope compressed as a deterministic Zstandard level-19 frame with content size and checksum enabled. Ordered maps and sorted lists make runtime-key assignment and serialization deterministic. The future `chinese_dictionary` build script should decompress the dictionary archives to their corresponding `.dictionary` names and `english.search.zst` to `OUT_DIR/english.search` before compiling the consumer.
 
-The current `chinese_dictionary` decoder cannot read schema 4. That project and Syng must migrate separately; do not copy this bundle into an unmodified runtime.
+The compressed English index has a 22 MiB publication ceiling. A larger build prints its section sizes and fails before the atomic bundle swap.
+
+With the pinned 2026-09-15 corpus, the complete version-1 English design encodes to 56,226,298 bytes raw and 22,056,532 bytes compressed (SHA-256 `08ad9f60dd3703446f090682aab557f848262c57277d1aab12f28ec0120eea9e`), within that ceiling.
+
+The same build compresses the five schema-enveloped dictionary files from 146,687,816 bytes to 34,150,044 bytes, a 76.7% reduction. The complete validated bundle is 73,270,590 bytes, down from 182,699,416 bytes for the preceding uncompressed schema-4 bundle despite the larger English search index.
+
+The current `chinese_dictionary` decoder cannot read schema 5. That project and Syng must migrate separately; do not copy this bundle into an unmodified runtime.
 
 ## Source and license notices
 

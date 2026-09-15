@@ -4,7 +4,7 @@ mod cedict;
 mod chinese_notes;
 mod wiktionary;
 
-use crate::lock::SourceLock;
+use crate::lock::{LockedArtifactSource, SourceLock};
 use crate::model::{AlternativePronunciation, Definition, LexicalId, Pinyin, Source, Sourced};
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
@@ -92,7 +92,12 @@ pub(crate) fn parse_all(
 
     let stage_started = Instant::now();
     eprintln!("Parsing CC-CEDICT...");
-    let cedict_path = artifact_path(source_lock, cache_directory, Source::CcCedict, "dictionary")?;
+    let cedict_path = artifact_path(
+        source_lock,
+        cache_directory,
+        LockedArtifactSource::CcCedict,
+        "dictionary",
+    )?;
     let cedict_file =
         File::open(&cedict_path).with_context(|| format!("open {}", cedict_path.display()))?;
     let parsed = cedict::parse(
@@ -111,7 +116,7 @@ pub(crate) fn parse_all(
     let notes_path = artifact_path(
         source_lock,
         cache_directory,
-        Source::ChineseNotes,
+        LockedArtifactSource::ChineseNotes,
         "dictionary",
     )?;
     let notes_file =
@@ -132,7 +137,7 @@ pub(crate) fn parse_all(
     let wiktionary_path = artifact_path(
         source_lock,
         cache_directory,
-        Source::Wiktionary,
+        LockedArtifactSource::Wiktionary,
         "filtered-chinese-jsonl",
     )?;
     let wiktionary_file = File::open(&wiktionary_path)
@@ -158,10 +163,10 @@ fn report_for(report: &mut BuildReport, source: Source) -> &mut SourceReport {
 }
 
 /// Locates one required cached artifact without triggering an implicit fetch.
-fn artifact_path(
+pub(crate) fn artifact_path(
     source_lock: &SourceLock,
     cache_directory: &Path,
-    source: Source,
+    source: LockedArtifactSource,
     role: &str,
 ) -> Result<PathBuf> {
     let pin = source_lock

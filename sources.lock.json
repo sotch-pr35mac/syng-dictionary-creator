@@ -1,5 +1,5 @@
 {
-  "schema_version": 4,
+  "schema_version": 5,
   "artifacts": [
     {
       "source": "cc-cedict",
@@ -68,6 +68,23 @@
       "attribution": "English Wiktionary contributors; structured extraction by Tatu Ylonen's Wiktextract and distribution by Kaikki.org.",
       "modifications": "Chinese records were retained from the Wiktextract snapshot, then Mandarin records and fields were conservatively selected, normalized, merged with other sources, and indexed by Syng Dictionary Creator. Quotations were excluded.",
       "parser_version": 2
+    },
+    {
+      "source": "princeton-word-net",
+      "role": "morphology",
+      "revision": "Princeton WordNet 3.1",
+      "url": "https://wordnetcode.princeton.edu/wn3.1.dict.tar.gz",
+      "cache_file": "wn3.1.dict.tar.gz",
+      "download_sha256": "3f7d8be8ef6ecc7167d39b10d66954ec734280b5bdcd57f7d9eafe429d11c22a",
+      "content_sha256": "3f7d8be8ef6ecc7167d39b10d66954ec734280b5bdcd57f7d9eafe429d11c22a",
+      "preparation": "plain",
+      "license": "WordNet-3.0",
+      "license_url": "https://wordnet.princeton.edu/license-and-commercial-use",
+      "license_evidence_url": "https://wordnet.princeton.edu/license-and-commercial-use",
+      "copyright_notice": "WordNet 3.1, Copyright 2011 Princeton University.",
+      "attribution": "Princeton University WordNet 3.1 lexical database.",
+      "modifications": "Noun and verb lemmas and exception lists were parsed, normalized, filtered to families intersecting the English gloss corpus, and encoded as morphology mappings.",
+      "parser_version": 1
     }
   ]
 }

@@ -67,7 +67,7 @@
       "copyright_notice": "English Wiktionary entry text is copyright its respective contributors.",
       "attribution": "English Wiktionary contributors; structured extraction by Tatu Ylonen's Wiktextract and distribution by Kaikki.org.",
       "modifications": "Chinese records were retained from the Wiktextract snapshot, then Mandarin records and fields were conservatively selected, normalized, merged with other sources, and indexed by Syng Dictionary Creator. Quotations were excluded.",
-      "parser_version": 1
+      "parser_version": 2
     }
   ]
 }

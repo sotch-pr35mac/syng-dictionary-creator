@@ -42,7 +42,7 @@ pub fn build(options: &BuildOptions) -> Result<()> {
     eprintln!("Building dictionary from verified cached sources...");
 
     let stage_started = Instant::now();
-    let source_lock = lock::load_and_verify(options, true)?;
+    let source_lock = lock::load_and_verify(options)?;
     eprintln!(
         "Verified {} pinned artifacts in {:.1?}.",
         source_lock.artifacts.len(),

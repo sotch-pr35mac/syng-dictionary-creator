@@ -131,6 +131,11 @@ fn parse_entry(
     let mut simplified_forms = BTreeSet::new();
     let mut traditional_forms = BTreeSet::new();
     for form in &entry.forms {
+        // Alternative spellings are lexical variants, not evidence for this
+        // record's canonical simplified/traditional identity.
+        if form.tags.iter().any(|tag| tag == "alternative") {
+            continue;
+        }
         if form.tags.iter().any(|tag| tag == "Simplified-Chinese") {
             simplified_forms.insert(normalize_headword(&form.form).context("invalid-form")?);
             traditional_forms.insert(word.clone());
@@ -314,16 +319,32 @@ fn map_pos(value: &str) -> Result<(Option<PartOfSpeech>, Option<LexicalKind>)> {
 fn explicitly_non_mandarin(tags: &[String]) -> bool {
     const NON_MANDARIN: &[&str] = &[
         "Cantonese",
-        "Hakka",
-        "Min-Nan",
-        "Min-Dong",
-        "Wu",
+        "Dungan",
         "Gan",
-        "Xiang",
-        "Teochew",
+        "Hainanese",
+        "Hakka",
+        "Hokkien",
+        "Huizhou",
         "Jin",
+        "Min",
+        "Pinghua",
+        "Taishanese",
+        "Teochew",
+        "Waxiang",
+        "Wu",
+        "Xiang",
     ];
-    tags.iter().any(|tag| NON_MANDARIN.contains(&tag.as_str()))
+    tags.iter().any(|tag| {
+        NON_MANDARIN.iter().any(|family| {
+            tag == family
+                || tag
+                    .strip_prefix(family)
+                    .is_some_and(|suffix| suffix.starts_with('-'))
+                || tag
+                    .strip_suffix(family)
+                    .is_some_and(|prefix| prefix.ends_with('-'))
+        })
+    })
 }
 
 /// Returns whether a topic is approved for structured domain publication.
@@ -431,7 +452,102 @@ mod tests {
             r#"[{"zh_pron":"yānhuǒ","tags":["Mandarin","Pinyin"]}]"#,
         );
         let wrapper: Wrapper = serde_json::from_str(&json).unwrap();
-        let record = parse_entry(wrapper.raw, 7, &mut SourceReport::default()).unwrap();
+        let mut report = SourceReport::default();
+        let record = parse_entry(wrapper.raw, 7, &mut report).unwrap();
         assert_eq!(record.definitions.len(), 1);
+        assert_eq!(report.diagnostics["excluded-non-mandarin-sense"], 1);
+    }
+
+    #[test]
+    fn alternative_script_forms_never_define_the_canonical_pair() {
+        for (word, alternative) in [("癌症", "癌癥"), ("落井下石", "落穽下石")] {
+            let json = format!(
+                r#"{{"source_line":7,"raw":{{"word":"{word}","lang":"Chinese","lang_code":"zh","pos":"noun","forms":[{{"form":"{alternative}","tags":["alternative","Traditional-Chinese"]}}],"sounds":[{{"zh_pron":"ái","tags":["Mandarin","Pinyin"]}}],"senses":[{{"glosses":["fixture"]}}]}}}}"#
+            );
+            let wrapper: Wrapper = serde_json::from_str(&json).unwrap();
+            let record = parse_entry(wrapper.raw, 7, &mut SourceReport::default()).unwrap();
+            assert_eq!(record.simplified, None);
+            assert_eq!(record.traditional, None);
+            assert_eq!(record.explicit_headwords, vec![word]);
+            assert!(
+                !record
+                    .explicit_headwords
+                    .iter()
+                    .any(|value| value == alternative)
+            );
+        }
+    }
+
+    #[test]
+    fn retains_a_canonical_counterpart_beside_an_alternative_form() {
+        let json = r#"{"source_line":7,"raw":{"word":"煙火","lang":"Chinese","lang_code":"zh","pos":"noun","forms":[{"form":"焰火","tags":["alternative","Simplified-Chinese"]},{"form":"烟火","tags":["Simplified-Chinese"]}],"sounds":[{"zh_pron":"yānhuǒ","tags":["Mandarin","Pinyin"]}],"senses":[{"glosses":["fireworks"]}]}}"#;
+        let wrapper: Wrapper = serde_json::from_str(json).unwrap();
+        let record = parse_entry(wrapper.raw, 7, &mut SourceReport::default()).unwrap();
+        assert_eq!(record.simplified.as_deref(), Some("烟火"));
+        assert_eq!(record.traditional.as_deref(), Some("煙火"));
+        assert_eq!(record.explicit_headwords, vec!["烟火", "煙火"]);
+    }
+
+    #[test]
+    fn recognizes_reviewed_non_mandarin_families_and_variants() {
+        let excluded = [
+            "Cantonese",
+            "Dungan",
+            "Gan",
+            "Hainanese",
+            "Hakka",
+            "Hokkien",
+            "Huizhou",
+            "Jin",
+            "Min",
+            "Pinghua",
+            "Taishanese",
+            "Teochew",
+            "Waxiang",
+            "Wu",
+            "Xiang",
+            "Min-Nan",
+            "Coastal-Min",
+            "Puxian-Min",
+            "Leizhou-Min",
+            "Taiwanese-Hokkien",
+            "Hokkien-Xiamen",
+            "Northern-Pinghua",
+            "Mandalay-Taishanese",
+        ];
+        for tag in excluded {
+            assert!(
+                explicitly_non_mandarin(&[tag.to_owned()]),
+                "expected {tag} to be excluded"
+            );
+        }
+
+        for tag in [
+            "Mandarin",
+            "Sichuanese",
+            "Taiwanese-Mandarin",
+            "Mainland-China",
+            "Jianghuai-Mandarin",
+        ] {
+            assert!(
+                !explicitly_non_mandarin(&[tag.to_owned()]),
+                "expected {tag} to be retained"
+            );
+        }
+    }
+
+    #[test]
+    fn excludes_the_leizhou_min_sense_from_hezi() {
+        let json = r#"{"source_line":830424,"raw":{"word":"核子","lang":"Chinese","lang_code":"zh","pos":"noun","forms":[{"form":"𣝗子","tags":["alternative"]}],"sounds":[{"zh_pron":"hézǐ","tags":["Mandarin","Pinyin"]}],"senses":[{"glosses":["nucleon"]},{"glosses":["nucleus"],"tags":["Taiwan"]},{"glosses":["testicle"],"tags":["Leizhou-Min"]},{"glosses":["pit; seed"],"tags":["Wu"]}]}}"#;
+        let wrapper: Wrapper = serde_json::from_str(json).unwrap();
+        let mut report = SourceReport::default();
+        let record = parse_entry(wrapper.raw, wrapper.source_line, &mut report).unwrap();
+        let glosses = record
+            .definitions
+            .iter()
+            .map(|definition| definition.gloss.value.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(glosses, vec!["nucleon", "nucleus"]);
+        assert_eq!(report.diagnostics["excluded-non-mandarin-sense"], 2);
     }
 }

@@ -349,7 +349,8 @@ mod tests {
         notes.definitions[0]
             .parts_of_speech
             .push(Sourced::one(PartOfSpeech::Noun, Source::ChineseNotes));
-        let units = combine(vec![cedict, notes], &mut BuildReport::default()).unwrap();
+        let mut report = BuildReport::default();
+        let units = combine(vec![cedict, notes], &mut report).unwrap();
         assert_eq!(units[0].english.len(), 1);
         assert_eq!(
             units[0].english[0].gloss.sources,
@@ -359,6 +360,10 @@ mod tests {
             units[0].english[0].parts_of_speech[0].sources,
             vec![Source::ChineseNotes]
         );
+        assert_eq!(report.sources[&Source::CcCedict].admitted_records, 1);
+        assert_eq!(report.sources[&Source::ChineseNotes].admitted_records, 1);
+        assert_eq!(report.sources[&Source::CcCedict].emitted_definitions, 1);
+        assert_eq!(report.sources[&Source::ChineseNotes].emitted_definitions, 0);
     }
 
     #[test]

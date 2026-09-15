@@ -46,8 +46,8 @@ pub(crate) enum Preparation {
     WiktionaryChinese,
 }
 
-/// Loads the source lock, validates legal metadata, and optionally verifies every cache entry.
-pub(crate) fn load_and_verify(options: &BuildOptions, require_all: bool) -> Result<SourceLock> {
+/// Loads the source lock and validates its schema and legal metadata.
+fn load(options: &BuildOptions) -> Result<SourceLock> {
     let bytes = fs::read(&options.lock_file)
         .with_context(|| format!("read source lock {}", options.lock_file.display()))?;
     let source_lock: SourceLock = serde_json::from_slice(&bytes).context("parse source lock")?;
@@ -58,21 +58,30 @@ pub(crate) fn load_and_verify(options: &BuildOptions, require_all: bool) -> Resu
         );
     }
     validate_license_metadata(&source_lock)?;
+    Ok(source_lock)
+}
+
+/// Loads the validated source lock and strictly verifies every cache entry.
+pub(crate) fn load_and_verify(options: &BuildOptions) -> Result<SourceLock> {
+    let source_lock = load(options)?;
+    verify_all_cached(&source_lock, &options.cache_directory)?;
+    Ok(source_lock)
+}
+
+/// Requires every pinned artifact to exist and match its content checksum.
+fn verify_all_cached(source_lock: &SourceLock, cache_directory: &Path) -> Result<()> {
     for pin in &source_lock.artifacts {
-        let path = options.cache_directory.join(&pin.cache_file);
+        let path = cache_directory.join(&pin.cache_file);
         if !path.exists() {
-            if require_all {
-                bail!(
-                    "missing verified input {}; run `cargo run -- fetch --cache-dir {}` first",
-                    path.display(),
-                    options.cache_directory.display()
-                );
-            }
-            continue;
+            bail!(
+                "missing verified input {}; run `cargo run -- fetch --cache-dir {}` first",
+                path.display(),
+                cache_directory.display()
+            );
         }
         verify_cached(pin, &path)?;
     }
-    Ok(source_lock)
+    Ok(())
 }
 
 /// Blocks publication unless every source carries the exact reviewed license metadata.
@@ -117,7 +126,7 @@ fn validate_license_metadata(source_lock: &SourceLock) -> Result<()> {
 
 /// Fetches missing or invalid cache artifacts and verifies all final checksums.
 pub(crate) fn fetch_all(options: &BuildOptions) -> Result<()> {
-    let source_lock = load_and_verify(options, false)?;
+    let source_lock = load(options)?;
     fs::create_dir_all(&options.cache_directory).with_context(|| {
         format!(
             "create source cache directory {}",
@@ -132,19 +141,56 @@ pub(crate) fn fetch_all(options: &BuildOptions) -> Result<()> {
         .build()
         .context("create HTTP client")?;
 
+    synchronize_cache(
+        &source_lock,
+        &options.cache_directory,
+        |pin, path| match pin.preparation {
+            Preparation::Plain | Preparation::Gzip => fetch_regular(&client, pin, path),
+            Preparation::WiktionaryChinese => fetch_wiktionary(&client, pin, path),
+        },
+    )
+}
+
+/// Synchronizes a cache using an injected downloader and verifies every replacement.
+fn synchronize_cache(
+    source_lock: &SourceLock,
+    cache_directory: &Path,
+    mut download: impl FnMut(&SourcePin, &Path) -> Result<()>,
+) -> Result<()> {
     for pin in &source_lock.artifacts {
-        let path = options.cache_directory.join(&pin.cache_file);
+        let path = cache_directory.join(&pin.cache_file);
         if path.exists() {
-            verify_cached(pin, &path)?;
-            println!("verified {}", path.display());
-            continue;
+            match verify_cached(pin, &path) {
+                Ok(()) => {
+                    println!("verified {}", path.display());
+                    continue;
+                }
+                Err(error) => {
+                    eprintln!(
+                        "discarding invalid cached input {}: {error:#}",
+                        path.display()
+                    );
+                    fs::remove_file(&path).with_context(|| {
+                        format!("remove invalid cached input {}", path.display())
+                    })?;
+                }
+            }
         }
         println!("fetching {}", pin.url);
-        match pin.preparation {
-            Preparation::Plain | Preparation::Gzip => fetch_regular(&client, pin, &path)?,
-            Preparation::WiktionaryChinese => fetch_wiktionary(&client, pin, &path)?,
+        if let Err(error) = download(pin, &path) {
+            if path.exists() {
+                fs::remove_file(&path)
+                    .with_context(|| format!("remove failed replacement {}", path.display()))?;
+            }
+            return Err(error);
         }
-        verify_cached(pin, &path)?;
+        if let Err(error) = verify_cached(pin, &path) {
+            if path.exists() {
+                fs::remove_file(&path)
+                    .with_context(|| format!("remove invalid replacement {}", path.display()))?;
+            }
+            return Err(error).context(format!("verify replacement for {}", pin.url));
+        }
     }
     Ok(())
 }
@@ -304,6 +350,11 @@ impl<R: Read> Read for HashingReader<R> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tempfile::tempdir;
+
+    fn digest(bytes: &[u8]) -> String {
+        format!("{:x}", Sha256::digest(bytes))
+    }
 
     fn reviewed_pin() -> SourcePin {
         SourcePin {
@@ -345,5 +396,80 @@ mod tests {
             artifacts: vec![pin],
         };
         assert!(validate_license_metadata(&source_lock).is_err());
+    }
+
+    #[test]
+    fn cache_synchronization_keeps_valid_and_replaces_missing_and_corrupt_artifacts() {
+        let directory = tempdir().unwrap();
+        let mut valid = reviewed_pin();
+        valid.cache_file = "valid.txt".to_owned();
+        valid.content_sha256 = digest(b"valid");
+        let mut missing = reviewed_pin();
+        missing.cache_file = "missing.txt".to_owned();
+        missing.content_sha256 = digest(b"replacement for missing");
+        let mut corrupt = reviewed_pin();
+        corrupt.cache_file = "corrupt.txt".to_owned();
+        corrupt.content_sha256 = digest(b"replacement for corrupt");
+        fs::write(directory.path().join(&valid.cache_file), b"valid").unwrap();
+        fs::write(directory.path().join(&corrupt.cache_file), b"corrupt").unwrap();
+        let source_lock = SourceLock {
+            schema_version: SCHEMA_VERSION,
+            artifacts: vec![valid, missing, corrupt],
+        };
+        let mut downloaded = Vec::new();
+
+        synchronize_cache(&source_lock, directory.path(), |pin, path| {
+            downloaded.push(pin.cache_file.clone());
+            let content = match pin.cache_file.as_str() {
+                "missing.txt" => b"replacement for missing".as_slice(),
+                "corrupt.txt" => b"replacement for corrupt".as_slice(),
+                _ => unreachable!("valid cache entries are not downloaded"),
+            };
+            fs::write(path, content)?;
+            Ok(())
+        })
+        .unwrap();
+
+        assert_eq!(downloaded, vec!["missing.txt", "corrupt.txt"]);
+        assert_eq!(
+            fs::read(directory.path().join("corrupt.txt")).unwrap(),
+            b"replacement for corrupt"
+        );
+        verify_all_cached(&source_lock, directory.path()).unwrap();
+    }
+
+    #[test]
+    fn invalid_replacement_is_removed() {
+        let directory = tempdir().unwrap();
+        let mut pin = reviewed_pin();
+        pin.content_sha256 = digest(b"expected");
+        fs::write(directory.path().join(&pin.cache_file), b"old corrupt data").unwrap();
+        let source_lock = SourceLock {
+            schema_version: SCHEMA_VERSION,
+            artifacts: vec![pin.clone()],
+        };
+
+        let result = synchronize_cache(&source_lock, directory.path(), |_pin, path| {
+            fs::write(path, b"still corrupt")?;
+            Ok(())
+        });
+
+        assert!(result.is_err());
+        assert!(!directory.path().join(pin.cache_file).exists());
+    }
+
+    #[test]
+    fn strict_cache_verification_rejects_missing_and_invalid_inputs() {
+        let directory = tempdir().unwrap();
+        let mut pin = reviewed_pin();
+        pin.content_sha256 = digest(b"expected");
+        let source_lock = SourceLock {
+            schema_version: SCHEMA_VERSION,
+            artifacts: vec![pin.clone()],
+        };
+
+        assert!(verify_all_cached(&source_lock, directory.path()).is_err());
+        fs::write(directory.path().join(&pin.cache_file), b"invalid").unwrap();
+        assert!(verify_all_cached(&source_lock, directory.path()).is_err());
     }
 }

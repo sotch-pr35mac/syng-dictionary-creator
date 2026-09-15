@@ -52,7 +52,7 @@ pub struct SourceReport {
     pub suppressed_records: u64,
     /// Number of records rejected because they could not be published safely.
     pub rejected_records: u64,
-    /// Number of definitions emitted before cross-source deduplication.
+    /// Number of definitions first introduced into the combined output.
     pub emitted_definitions: u64,
     /// Number of Wiktionary quotations excluded from the artifact.
     pub excluded_quotations: u64,

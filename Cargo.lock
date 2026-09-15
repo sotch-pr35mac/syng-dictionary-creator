@@ -1035,6 +1035,7 @@ dependencies = [
  "flate2",
  "fst",
  "hsk",
+ "percent-encoding",
  "prettify_pinyin",
  "regex",
  "reqwest",

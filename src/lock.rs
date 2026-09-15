@@ -28,7 +28,11 @@ pub(crate) struct SourcePin {
     pub content_sha256: String,
     pub preparation: Preparation,
     pub license: String,
+    pub license_url: String,
+    pub license_evidence_url: String,
+    pub copyright_notice: String,
     pub attribution: String,
+    pub modifications: String,
     pub parser_version: u32,
 }
 
@@ -50,6 +54,7 @@ pub(crate) fn load_and_verify(options: &BuildOptions, require_all: bool) -> Resu
             source_lock.schema_version
         );
     }
+    validate_license_metadata(&source_lock)?;
     for pin in &source_lock.artifacts {
         let path = options.cache_directory.join(&pin.cache_file);
         if !path.exists() {
@@ -65,6 +70,45 @@ pub(crate) fn load_and_verify(options: &BuildOptions, require_all: bool) -> Resu
         verify_cached(pin, &path)?;
     }
     Ok(source_lock)
+}
+
+fn validate_license_metadata(source_lock: &SourceLock) -> Result<()> {
+    for pin in &source_lock.artifacts {
+        let expected_license = match pin.source {
+            Source::CcCedict | Source::Wiktionary => "CC-BY-SA-4.0",
+            Source::ChineseNotes => "CC-BY-SA-3.0",
+        };
+        if pin.license != expected_license {
+            bail!(
+                "unreviewed license {:?} for {:?}/{}; update the license policy deliberately before publication",
+                pin.license,
+                pin.source,
+                pin.role
+            );
+        }
+        for (field, value) in [
+            ("license_url", pin.license_url.as_str()),
+            ("license_evidence_url", pin.license_evidence_url.as_str()),
+        ] {
+            if !value.starts_with("https://") {
+                bail!(
+                    "{field} for {:?}/{} must be an HTTPS URL",
+                    pin.source,
+                    pin.role
+                );
+            }
+        }
+        for (field, value) in [
+            ("copyright_notice", pin.copyright_notice.as_str()),
+            ("attribution", pin.attribution.as_str()),
+            ("modifications", pin.modifications.as_str()),
+        ] {
+            if value.trim().is_empty() {
+                bail!("{field} is empty for {:?}/{}", pin.source, pin.role);
+            }
+        }
+    }
+    Ok(())
 }
 
 pub(crate) fn fetch_all(options: &BuildOptions) -> Result<()> {
@@ -242,5 +286,52 @@ impl<R: Read> Read for HashingReader<R> {
         let count = self.inner.read(buffer)?;
         self.digest.update(&buffer[..count]);
         Ok(count)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn reviewed_pin() -> SourcePin {
+        SourcePin {
+            source: Source::CcCedict,
+            role: "dictionary".to_owned(),
+            revision: "fixture".to_owned(),
+            url: "https://example.com/source".to_owned(),
+            cache_file: "source.txt".to_owned(),
+            download_sha256: "0".repeat(64),
+            content_sha256: "0".repeat(64),
+            preparation: Preparation::Plain,
+            license: "CC-BY-SA-4.0".to_owned(),
+            license_url: "https://creativecommons.org/licenses/by-sa/4.0/".to_owned(),
+            license_evidence_url: "https://example.com/license".to_owned(),
+            copyright_notice: "Copyright fixture contributors.".to_owned(),
+            attribution: "Fixture contributors.".to_owned(),
+            modifications: "Parsed for a test.".to_owned(),
+            parser_version: 1,
+        }
+    }
+
+    #[test]
+    fn unreviewed_source_license_blocks_publication() {
+        let mut pin = reviewed_pin();
+        pin.license = "CC-BY-4.0".to_owned();
+        let source_lock = SourceLock {
+            schema_version: SCHEMA_VERSION,
+            artifacts: vec![pin],
+        };
+        assert!(validate_license_metadata(&source_lock).is_err());
+    }
+
+    #[test]
+    fn incomplete_license_metadata_blocks_publication() {
+        let mut pin = reviewed_pin();
+        pin.modifications.clear();
+        let source_lock = SourceLock {
+            schema_version: SCHEMA_VERSION,
+            artifacts: vec![pin],
+        };
+        assert!(validate_license_metadata(&source_lock).is_err());
     }
 }

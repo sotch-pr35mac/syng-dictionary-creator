@@ -26,7 +26,15 @@ cargo run -- validate
 
 All commands accept `--cache-dir PATH`, `--output-dir PATH`, and `--lock-file PATH`. `build` never downloads missing inputs; it reports the missing path and tells the operator to run `fetch` explicitly.
 
-`sources.lock.json` records source URLs, revisions, SHA-256 checksums, licenses, attribution text, and parser versions. A changed input or an unknown structured grammar/POS value stops publication so its mapping can be reviewed.
+`sources.lock.json` records source URLs, revisions, SHA-256 checksums, SPDX licenses, license and evidence URLs, copyright notices, attribution text, modification notices, and parser versions. The creator rejects an unreviewed source-license value. A changed input or an unknown structured grammar/POS value stops publication so its mapping can be reviewed.
+
+Audit the complete Rust dependency graph with [cargo-deny](https://github.com/EmbarkStudios/cargo-deny):
+
+```console
+cargo deny check licenses
+```
+
+`deny.toml` contains the reviewed GPL-compatible license allowlist. Run this check whenever `Cargo.lock` changes.
 
 ## Canonical schema
 
@@ -117,6 +125,9 @@ The published bundle contains:
 - `chinese.fst`: deduplicated simplified/traditional tokenizer terms
 - `manifest.json`: source pins, licenses, attribution, counts, schema, and checksums
 - `build-report.json`: admitted, suppressed, rejected, and source-specific diagnostic counts
+- `LICENSE-DATA.txt`: license grant for the combined dictionary bundle
+- `NOTICE.md`: source copyrights, attribution, license evidence, and modification notices
+- `wiktionary-attribution.json`: lexical identities to English Wiktionary entry pages and contributor histories
 
 Every binary `.dictionary` file carries an explicit schema-version envelope. Ordered maps and sorted lists make runtime-key assignment and serialization deterministic.
 
@@ -124,6 +135,8 @@ The current `chinese_dictionary` decoder cannot read schema 4. That project and 
 
 ## Source and license notices
 
-The creator is GPL-3.0 licensed. Generated data combines material under source-specific terms recorded in `sources.lock.json` and `manifest.json`, including CC-CEDICT under CC-BY-SA-4.0, Chinese Notes under CC-BY-SA-3.0, and English Wiktionary entry text under CC-BY-SA-4.0 (with the documented GFDL alternative where applicable). Redistributors must preserve the generated manifest and comply with every applicable attribution and share-alike requirement.
+The creator software is `GPL-3.0-only`; generated data is separate and is licensed as an adapted database under `CC-BY-SA-4.0`. CC-CEDICT and English Wiktionary material use CC-BY-SA-4.0. Chinese Notes uses CC-BY-SA-3.0, whose adapter-license clause permits a later BY-SA version with the same license elements. English Wiktionary also offers a GFDL option upstream, but this bundle uses its CC-BY-SA-4.0 option.
+
+Redistributors must ship `LICENSE-DATA.txt`, `NOTICE.md`, `manifest.json`, and `wiktionary-attribution.json` with the data, retain the source and modification notices, license adaptations compatibly, and avoid implying upstream endorsement. See the checked-in [licensing and attribution notice](NOTICE.md) for the complete record.
 
 The creator validates structure, pronunciation scope, attribution, deterministic combination, and cross-references. It does not independently certify the linguistic accuracy of source claims.

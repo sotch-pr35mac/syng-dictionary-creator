@@ -4,6 +4,7 @@ use crate::pinyin::from_numbered;
 use crate::sources::BuildReport;
 use anyhow::{Context, Result, bail};
 use fst::Set;
+use percent_encoding::{NON_ALPHANUMERIC, utf8_percent_encode};
 use regex::Regex;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use sha2::{Digest, Sha256};
@@ -13,7 +14,7 @@ use std::io::{BufWriter, Write};
 use std::path::{Path, PathBuf};
 use std::sync::LazyLock;
 
-const BINARY_FILES: &[&str] = &[
+const CHECKSUMMED_FILES: &[&str] = &[
     "data.dictionary",
     "simplified.dictionary",
     "traditional.dictionary",
@@ -21,7 +22,15 @@ const BINARY_FILES: &[&str] = &[
     "english.dictionary",
     "identity.dictionary",
     "chinese.fst",
+    "LICENSE-DATA.txt",
+    "NOTICE.md",
+    "wiktionary-attribution.json",
 ];
+const BUNDLE_LICENSE: &str = "CC-BY-SA-4.0";
+const BUNDLE_LICENSE_URL: &str = "https://creativecommons.org/licenses/by-sa/4.0/";
+const BUNDLE_MODIFICATIONS: &str = "Syng Dictionary Creator parsed, normalized, filtered, structurally annotated, deduplicated exact matches, merged source material, assigned stable identities, and built search indexes. It excluded Wiktionary quotations.";
+const WIKTIONARY_ATTRIBUTION_EXPLANATION: &str = "Each key identifies a LexicalUnit containing English Wiktionary material. The linked entry pages provide the contributor history used for author attribution.";
+const LICENSE_DATA_TEXT: &str = include_str!("../LICENSE-DATA");
 
 static DIGIT_OR_PUNCTUATION: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"\d|\p{P}").expect("English lookup regex"));
@@ -32,6 +41,9 @@ static FIRST_PARENTHETICAL: LazyLock<Regex> =
 struct Manifest {
     schema_version: u32,
     creator_version: String,
+    bundle_license: String,
+    bundle_license_url: String,
+    modification_notice: String,
     source_pins: Vec<ManifestSource>,
     record_counts: BTreeMap<String, u64>,
     file_checksums: BTreeMap<String, String>,
@@ -46,8 +58,19 @@ struct ManifestSource {
     url: String,
     content_sha256: String,
     license: String,
+    license_url: String,
+    license_evidence_url: String,
+    copyright_notice: String,
     attribution: String,
+    modifications: String,
     parser_version: u32,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct WiktionaryAttribution {
+    schema_version: u32,
+    explanation: String,
+    entries: BTreeMap<LexicalId, Vec<String>>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -110,10 +133,21 @@ fn write_temporary_bundle(
     let mut pinyin = SearchIndex::new();
     let mut english = SearchIndex::new();
     let mut chinese_terms = BTreeSet::new();
+    let mut wiktionary_entries = BTreeMap::new();
 
     for (runtime_index, unit) in lexical_units.into_iter().enumerate() {
         let runtime_key =
             u32::try_from(runtime_index).context("more than u32::MAX lexical units")?;
+        if has_source(&unit, crate::model::Source::Wiktionary) {
+            let mut urls = BTreeSet::new();
+            for headword in [&unit.simplified, &unit.traditional] {
+                urls.insert(format!(
+                    "https://en.wiktionary.org/wiki/{}",
+                    utf8_percent_encode(headword, NON_ALPHANUMERIC)
+                ));
+            }
+            wiktionary_entries.insert(unit.id.clone(), urls.into_iter().collect());
+        }
         identity.insert(unit.id.clone(), runtime_key);
         insert_index(&mut simplified, unit.simplified.clone(), runtime_key);
         insert_index(&mut traditional, unit.traditional.clone(), runtime_key);
@@ -141,8 +175,19 @@ fn write_temporary_bundle(
     write_binary(directory, "english.dictionary", &english)?;
     write_binary(directory, "identity.dictionary", &identity)?;
     write_fst(directory, chinese_terms)?;
+    fs::write(directory.join("LICENSE-DATA.txt"), LICENSE_DATA_TEXT)
+        .context("write LICENSE-DATA.txt")?;
+    fs::write(directory.join("NOTICE.md"), notice(source_lock)).context("write NOTICE.md")?;
+    write_json(
+        directory.join("wiktionary-attribution.json"),
+        &WiktionaryAttribution {
+            schema_version: SCHEMA_VERSION,
+            explanation: WIKTIONARY_ATTRIBUTION_EXPLANATION.to_owned(),
+            entries: wiktionary_entries,
+        },
+    )?;
 
-    let file_checksums = checksums(directory, BINARY_FILES)?;
+    let file_checksums = checksums(directory, CHECKSUMMED_FILES)?;
     let source_pins = source_lock
         .artifacts
         .iter()
@@ -153,7 +198,11 @@ fn write_temporary_bundle(
             url: pin.url.clone(),
             content_sha256: pin.content_sha256.clone(),
             license: pin.license.clone(),
+            license_url: pin.license_url.clone(),
+            license_evidence_url: pin.license_evidence_url.clone(),
+            copyright_notice: pin.copyright_notice.clone(),
             attribution: pin.attribution.clone(),
+            modifications: pin.modifications.clone(),
             parser_version: pin.parser_version,
         })
         .collect();
@@ -181,12 +230,14 @@ fn write_temporary_bundle(
     let manifest = Manifest {
         schema_version: SCHEMA_VERSION,
         creator_version: env!("CARGO_PKG_VERSION").to_owned(),
+        bundle_license: BUNDLE_LICENSE.to_owned(),
+        bundle_license_url: BUNDLE_LICENSE_URL.to_owned(),
+        modification_notice: BUNDLE_MODIFICATIONS.to_owned(),
         source_pins,
         record_counts,
         file_checksums: file_checksums.clone(),
-        attribution_requirement:
-            "Redistributions must preserve every source's attribution and license notices."
-                .to_owned(),
+        attribution_requirement: "Redistributions must remain under CC-BY-SA-4.0 and include LICENSE-DATA.txt, NOTICE.md, manifest.json, and wiktionary-attribution.json. Do not imply endorsement by any upstream project or contributor."
+            .to_owned(),
     };
     write_json(directory.join("manifest.json"), &manifest)?;
     write_json(
@@ -198,6 +249,74 @@ fn write_temporary_bundle(
         },
     )?;
     Ok(())
+}
+
+fn notice(source_lock: &SourceLock) -> String {
+    let mut notice = format!(
+        "# Syng dictionary data notices\n\nThe generated dictionary bundle is an adapted database licensed under [{BUNDLE_LICENSE}]({BUNDLE_LICENSE_URL}). The creator software is separate and licensed under GPL-3.0-only.\n\n**Changes made:** {BUNDLE_MODIFICATIONS}\n\nNo upstream project or contributor endorses Syng or this bundle. Source claims and data are provided without warranties.\n"
+    );
+    for pin in &source_lock.artifacts {
+        notice.push_str(&format!(
+            "\n## {:?} — {}\n\n- Revision: `{}`\n- Material: {}\n- License: [{}]({})\n- License evidence: {}\n- Copyright notice: {}\n- Attribution: {}\n- Changes: {}\n",
+            pin.source,
+            pin.role,
+            pin.revision,
+            pin.url,
+            pin.license,
+            pin.license_url,
+            pin.license_evidence_url,
+            pin.copyright_notice,
+            pin.attribution,
+            pin.modifications
+        ));
+    }
+    notice.push_str("\nFor English Wiktionary material, `wiktionary-attribution.json` links each affected lexical identity to its entry page and contributor history. Wiktionary is also offered upstream under the GFDL; this bundle uses the CC-BY-SA-4.0 option.\n");
+    notice
+}
+
+fn has_source(unit: &LexicalUnit, source: crate::model::Source) -> bool {
+    unit.alternative_pronunciations
+        .iter()
+        .any(|value| value.sources.contains(&source))
+        || unit
+            .measure_words
+            .iter()
+            .any(|value| value.sources.contains(&source))
+        || unit.english.iter().any(|definition| {
+            definition.gloss.sources.contains(&source)
+                || definition
+                    .context
+                    .iter()
+                    .any(|value| value.sources.contains(&source))
+                || definition
+                    .examples
+                    .iter()
+                    .any(|value| value.sources.contains(&source))
+                || definition
+                    .commentary
+                    .iter()
+                    .any(|value| value.sources.contains(&source))
+                || definition
+                    .qualifiers
+                    .iter()
+                    .any(|value| value.sources.contains(&source))
+                || definition
+                    .lexical_kinds
+                    .iter()
+                    .any(|value| value.sources.contains(&source))
+                || definition
+                    .parts_of_speech
+                    .iter()
+                    .any(|value| value.sources.contains(&source))
+                || definition
+                    .alternative_pronunciations
+                    .iter()
+                    .any(|value| value.sources.contains(&source))
+                || definition
+                    .measure_words
+                    .iter()
+                    .any(|value| value.sources.contains(&source))
+        })
 }
 
 fn pinyin_keys(unit: &LexicalUnit) -> BTreeSet<String> {
@@ -302,6 +421,32 @@ pub fn validate_bundle(directory: &Path) -> Result<()> {
     if manifest.schema_version != SCHEMA_VERSION {
         bail!("unsupported manifest schema {}", manifest.schema_version);
     }
+    if manifest.bundle_license != BUNDLE_LICENSE
+        || manifest.bundle_license_url != BUNDLE_LICENSE_URL
+        || manifest.modification_notice != BUNDLE_MODIFICATIONS
+    {
+        bail!("manifest has an unsupported or incomplete bundle license notice");
+    }
+    validate_manifest_licensing(&manifest)?;
+    if fs::read_to_string(directory.join("LICENSE-DATA.txt")).context("read LICENSE-DATA.txt")?
+        != LICENSE_DATA_TEXT
+    {
+        bail!("LICENSE-DATA.txt is not the reviewed bundle license notice");
+    }
+    let notice_text = fs::read_to_string(directory.join("NOTICE.md")).context("read NOTICE.md")?;
+    for source in &manifest.source_pins {
+        for required_notice in [
+            source.license_url.as_str(),
+            source.license_evidence_url.as_str(),
+            source.copyright_notice.as_str(),
+            source.attribution.as_str(),
+            source.modifications.as_str(),
+        ] {
+            if !notice_text.contains(required_notice) {
+                bail!("NOTICE.md omits licensing metadata for {:?}", source.source);
+            }
+        }
+    }
     for source in [
         crate::model::Source::CcCedict,
         crate::model::Source::ChineseNotes,
@@ -327,7 +472,7 @@ pub fn validate_bundle(directory: &Path) -> Result<()> {
             bail!("{prefix} input records are not fully accounted for");
         }
     }
-    let actual_checksums = checksums(directory, BINARY_FILES)?;
+    let actual_checksums = checksums(directory, CHECKSUMMED_FILES)?;
     if actual_checksums != manifest.file_checksums {
         bail!("bundle file checksums do not match manifest");
     }
@@ -338,10 +483,28 @@ pub fn validate_bundle(directory: &Path) -> Result<()> {
     let traditional: SearchIndex = read_binary(directory, "traditional.dictionary")?;
     let pinyin: SearchIndex = read_binary(directory, "pinyin.dictionary")?;
     let english: SearchIndex = read_binary(directory, "english.dictionary")?;
+    let wiktionary_attribution: WiktionaryAttribution = serde_json::from_slice(
+        &fs::read(directory.join("wiktionary-attribution.json"))
+            .context("read wiktionary-attribution.json")?,
+    )
+    .context("parse wiktionary-attribution.json")?;
+    if wiktionary_attribution.schema_version != SCHEMA_VERSION {
+        bail!("unsupported Wiktionary attribution schema");
+    }
+    if wiktionary_attribution.explanation != WIKTIONARY_ATTRIBUTION_EXPLANATION {
+        bail!("unsupported Wiktionary attribution explanation");
+    }
     let runtime_keys = data.keys().copied().collect::<BTreeSet<_>>();
 
     if identity.len() != data.len() {
         bail!("identity index and data have different record counts");
+    }
+    if wiktionary_attribution
+        .entries
+        .keys()
+        .any(|lexical_id| !identity.contains_key(lexical_id))
+    {
+        bail!("Wiktionary attribution contains an unknown lexical identity");
     }
     for (runtime_key, unit) in &data {
         let recomputed = LexicalId::new(&unit.simplified, &unit.traditional, &unit.pinyin.numbers)?;
@@ -355,6 +518,20 @@ pub fn validate_bundle(directory: &Path) -> Result<()> {
             bail!("noncanonical pinyin for {}", unit.id);
         }
         validate_sources(unit)?;
+        let has_wiktionary = has_source(unit, crate::model::Source::Wiktionary);
+        let attribution_urls = wiktionary_attribution.entries.get(&unit.id);
+        if has_wiktionary != attribution_urls.is_some() {
+            bail!("Wiktionary attribution is inconsistent for {}", unit.id);
+        }
+        if attribution_urls.is_some_and(|urls| {
+            urls.is_empty()
+                || urls.windows(2).any(|pair| pair[0] >= pair[1])
+                || urls
+                    .iter()
+                    .any(|url| !url.starts_with("https://en.wiktionary.org/wiki/"))
+        }) {
+            bail!("invalid Wiktionary attribution URL for {}", unit.id);
+        }
         for measure_word in unit.measure_words.iter().chain(
             unit.english
                 .iter()
@@ -388,6 +565,27 @@ pub fn validate_bundle(directory: &Path) -> Result<()> {
         }
     }
     Set::new(fs::read(directory.join("chinese.fst"))?).context("validate Chinese FST")?;
+    Ok(())
+}
+
+fn validate_manifest_licensing(manifest: &Manifest) -> Result<()> {
+    for source in &manifest.source_pins {
+        let expected_license = match source.source {
+            crate::model::Source::CcCedict | crate::model::Source::Wiktionary => "CC-BY-SA-4.0",
+            crate::model::Source::ChineseNotes => "CC-BY-SA-3.0",
+        };
+        if source.license != expected_license {
+            bail!("manifest contains an unreviewed source license");
+        }
+        if !source.license_url.starts_with("https://")
+            || !source.license_evidence_url.starts_with("https://")
+            || source.copyright_notice.trim().is_empty()
+            || source.attribution.trim().is_empty()
+            || source.modifications.trim().is_empty()
+        {
+            bail!("manifest contains incomplete source licensing metadata");
+        }
+    }
     Ok(())
 }
 
@@ -536,7 +734,7 @@ mod tests {
         write_bundle(&first, &empty_lock(), vec![unit()], BuildReport::default()).unwrap();
         write_bundle(&second, &empty_lock(), vec![unit()], BuildReport::default()).unwrap();
         validate_bundle(&first).unwrap();
-        for name in BINARY_FILES
+        for name in CHECKSUMMED_FILES
             .iter()
             .copied()
             .chain(["manifest.json", "build-report.json"])
@@ -546,6 +744,51 @@ mod tests {
                 fs::read(second.join(name)).unwrap()
             );
         }
+    }
+
+    #[test]
+    fn bundle_carries_license_and_wiktionary_entry_attribution() {
+        let temporary = TempDir::new().unwrap();
+        let output = temporary.path().join("bundle");
+        let repeated_output = temporary.path().join("repeated-bundle");
+        let mut wiktionary_unit = unit();
+        wiktionary_unit.english[0].gloss.sources = vec![Source::Wiktionary];
+        let lexical_id = wiktionary_unit.id.clone();
+        write_bundle(
+            &output,
+            &empty_lock(),
+            vec![wiktionary_unit.clone()],
+            BuildReport::default(),
+        )
+        .unwrap();
+        write_bundle(
+            &repeated_output,
+            &empty_lock(),
+            vec![wiktionary_unit],
+            BuildReport::default(),
+        )
+        .unwrap();
+
+        let manifest: Manifest =
+            serde_json::from_slice(&fs::read(output.join("manifest.json")).unwrap()).unwrap();
+        assert_eq!(manifest.bundle_license, "CC-BY-SA-4.0");
+        let attribution: WiktionaryAttribution =
+            serde_json::from_slice(&fs::read(output.join("wiktionary-attribution.json")).unwrap())
+                .unwrap();
+        assert_eq!(
+            attribution.entries.get(&lexical_id).unwrap(),
+            &vec![
+                "https://en.wiktionary.org/wiki/%E7%83%9F%E7%81%AB".to_owned(),
+                "https://en.wiktionary.org/wiki/%E7%85%99%E7%81%AB".to_owned(),
+            ]
+        );
+        assert!(output.join("LICENSE-DATA.txt").is_file());
+        assert!(output.join("NOTICE.md").is_file());
+        assert_eq!(
+            fs::read(output.join("wiktionary-attribution.json")).unwrap(),
+            fs::read(repeated_output.join("wiktionary-attribution.json")).unwrap()
+        );
+        validate_bundle(&output).unwrap();
     }
 
     #[test]

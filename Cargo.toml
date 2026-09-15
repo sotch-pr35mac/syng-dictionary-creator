@@ -2,7 +2,11 @@
 name = "syng-dictionary-creator"
 version = "4.0.0"
 authors = ["Preston Wang-Stosur-Bassett <p.wanstobas@gmail.com>"]
+description = "Deterministic multi-source Chinese-English dictionary bundle builder"
 edition = "2024"
+license = "GPL-3.0-only"
+repository = "https://github.com/sotch-pr35mac/syng-dictionary-creator"
+readme = "README.md"
 
 [dependencies]
 anyhow = "1.0.104"
@@ -11,6 +15,7 @@ flate2 = "1.1.9"
 fst = "0.4"
 hsk = "1.0.0"
 prettify_pinyin = "2.0.0"
+percent-encoding = "2.3.2"
 regex = "1.12.3"
 reqwest = { version = "0.12.28", default-features = false, features = ["blocking", "rustls-tls"] }
 serde = { version = "1.0.228", features = ["derive"] }

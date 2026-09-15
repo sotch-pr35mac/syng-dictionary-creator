@@ -110,7 +110,7 @@ fn validate_license_metadata(source_lock: &SourceLock) -> Result<()> {
         let expected_license = match pin.source {
             LockedArtifactSource::CcCedict | LockedArtifactSource::Wiktionary => "CC-BY-SA-4.0",
             LockedArtifactSource::ChineseNotes => "CC-BY-SA-3.0",
-            LockedArtifactSource::PrincetonWordNet => "WordNet-3.0",
+            LockedArtifactSource::PrincetonWordNet => "WordNet",
         };
         if pin.license != expected_license {
             bail!(

@@ -25,6 +25,7 @@ const CHECKSUMMED_FILES: &[&str] = &[
     "identity.dictionary.zst",
     "chinese.fst",
     "LICENSE-DATA.txt",
+    "LICENSE-WORDNET.txt",
     "NOTICE.md",
     "wiktionary-attribution.json",
 ];
@@ -41,6 +42,7 @@ const BUNDLE_LICENSE_URL: &str = "https://creativecommons.org/licenses/by-sa/4.0
 const BUNDLE_MODIFICATIONS: &str = "Syng Dictionary Creator parsed, normalized, filtered, structurally annotated, deduplicated exact matches, merged source material, assigned stable identities, and built search indexes. It excluded Wiktionary quotations.";
 const WIKTIONARY_ATTRIBUTION_EXPLANATION: &str = "Each key identifies a LexicalUnit containing English Wiktionary material. The linked entry pages provide the contributor history used for author attribution.";
 const LICENSE_DATA_TEXT: &str = include_str!("../LICENSE-DATA");
+const WORDNET_LICENSE_TEXT: &str = include_str!("../LICENSE-WORDNET.txt");
 
 #[derive(Debug, Serialize, Deserialize)]
 struct Manifest {
@@ -243,6 +245,8 @@ fn write_temporary_bundle(
     write_fst(directory, chinese_terms)?;
     fs::write(directory.join("LICENSE-DATA.txt"), LICENSE_DATA_TEXT)
         .context("write LICENSE-DATA.txt")?;
+    fs::write(directory.join("LICENSE-WORDNET.txt"), WORDNET_LICENSE_TEXT)
+        .context("write LICENSE-WORDNET.txt")?;
     fs::write(directory.join("NOTICE.md"), notice(source_lock)).context("write NOTICE.md")?;
     write_json(
         directory.join("wiktionary-attribution.json"),
@@ -303,7 +307,7 @@ fn write_temporary_bundle(
         record_counts,
         file_checksums: file_checksums.clone(),
         english_search: english_search.report.clone(),
-        attribution_requirement: "Redistributions must remain under CC-BY-SA-4.0 and include LICENSE-DATA.txt, NOTICE.md, manifest.json, and wiktionary-attribution.json. Do not imply endorsement by any upstream project or contributor."
+        attribution_requirement: "Redistributions must remain under CC-BY-SA-4.0 for the CC-licensed adapted material, preserve the separate WordNet license for WordNet-derived morphology, and include LICENSE-DATA.txt, LICENSE-WORDNET.txt, NOTICE.md, manifest.json, and wiktionary-attribution.json. Do not imply endorsement by any upstream project or contributor."
             .to_owned(),
     };
     write_json(directory.join("manifest.json"), &manifest)?;
@@ -340,6 +344,7 @@ fn notice(source_lock: &SourceLock) -> String {
         ));
     }
     notice.push_str("\nFor English Wiktionary material, `wiktionary-attribution.json` links each affected lexical identity to its entry page and contributor history. Wiktionary is also offered upstream under the GFDL; this bundle uses the CC-BY-SA-4.0 option.\n");
+    notice.push_str("\nWordNet-derived morphology is included under the separate Princeton WordNet license. The complete license text is provided in `LICENSE-WORDNET.txt`, which must accompany any redistribution containing that material.\n");
     notice
 }
 
@@ -512,6 +517,12 @@ pub fn validate_bundle(directory: &Path) -> Result<()> {
         != LICENSE_DATA_TEXT
     {
         bail!("LICENSE-DATA.txt is not the reviewed bundle license notice");
+    }
+    if fs::read_to_string(directory.join("LICENSE-WORDNET.txt"))
+        .context("read LICENSE-WORDNET.txt")?
+        != WORDNET_LICENSE_TEXT
+    {
+        bail!("LICENSE-WORDNET.txt is not the reviewed WordNet license notice");
     }
     let notice_text = fs::read_to_string(directory.join("NOTICE.md")).context("read NOTICE.md")?;
     for source in &manifest.source_pins {
@@ -690,7 +701,7 @@ fn validate_manifest_licensing(manifest: &Manifest) -> Result<()> {
         let expected_license = match source.source {
             LockedArtifactSource::CcCedict | LockedArtifactSource::Wiktionary => "CC-BY-SA-4.0",
             LockedArtifactSource::ChineseNotes => "CC-BY-SA-3.0",
-            LockedArtifactSource::PrincetonWordNet => "WordNet-3.0",
+            LockedArtifactSource::PrincetonWordNet => "WordNet",
         };
         if source.license != expected_license {
             bail!("manifest contains an unreviewed source license");
@@ -884,7 +895,7 @@ mod tests {
                 download_sha256: "0".repeat(64),
                 content_sha256: "0".repeat(64),
                 preparation: crate::lock::Preparation::Plain,
-                license: "WordNet-3.0".to_owned(),
+                license: "WordNet".to_owned(),
                 license_url: "https://wordnet.princeton.edu/license-and-commercial-use".to_owned(),
                 license_evidence_url: "https://wordnet.princeton.edu/license-and-commercial-use"
                     .to_owned(),
@@ -975,7 +986,17 @@ mod tests {
             ]
         );
         assert!(output.join("LICENSE-DATA.txt").is_file());
+        assert!(output.join("LICENSE-WORDNET.txt").is_file());
         assert!(output.join("NOTICE.md").is_file());
+        assert_eq!(
+            fs::read_to_string(output.join("LICENSE-WORDNET.txt")).unwrap(),
+            WORDNET_LICENSE_TEXT
+        );
+        assert!(
+            fs::read_to_string(output.join("NOTICE.md"))
+                .unwrap()
+                .contains("WordNet-derived morphology")
+        );
         assert_eq!(
             fs::read(output.join("wiktionary-attribution.json")).unwrap(),
             fs::read(repeated_output.join("wiktionary-attribution.json")).unwrap()

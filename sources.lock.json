@@ -78,7 +78,7 @@
       "download_sha256": "3f7d8be8ef6ecc7167d39b10d66954ec734280b5bdcd57f7d9eafe429d11c22a",
       "content_sha256": "3f7d8be8ef6ecc7167d39b10d66954ec734280b5bdcd57f7d9eafe429d11c22a",
       "preparation": "plain",
-      "license": "WordNet-3.0",
+      "license": "WordNet",
       "license_url": "https://wordnet.princeton.edu/license-and-commercial-use",
       "license_evidence_url": "https://wordnet.princeton.edu/license-and-commercial-use",
       "copyright_notice": "WordNet 3.1, Copyright 2011 Princeton University.",

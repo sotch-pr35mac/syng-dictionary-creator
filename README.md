@@ -130,6 +130,7 @@ The published bundle contains:
 - `manifest.json`: source pins, licenses, attribution, counts, schema, and checksums
 - `build-report.json`: admitted, suppressed, rejected, and source-specific diagnostic counts
 - `LICENSE-DATA.txt`: license grant for the combined dictionary bundle
+- `LICENSE-WORDNET.txt`: Princeton WordNet 3.1 license notice and disclaimer
 - `NOTICE.md`: source copyrights, attribution, license evidence, and modification notices
 - `wiktionary-attribution.json`: lexical identities to English Wiktionary entry pages and contributor histories
 
@@ -145,8 +146,8 @@ The current `chinese_dictionary` decoder cannot read schema 5. That project and 
 
 ## Source and license notices
 
-The creator software is `GPL-3.0-only`; generated data is separate and is licensed as an adapted database under `CC-BY-SA-4.0`. CC-CEDICT and English Wiktionary material use CC-BY-SA-4.0. Chinese Notes uses CC-BY-SA-3.0, whose adapter-license clause permits a later BY-SA version with the same license elements. English Wiktionary also offers a GFDL option upstream, but this bundle uses its CC-BY-SA-4.0 option.
+The creator software is `GPL-3.0-only`; generated data is separate. Syng's selection, arrangement, schema, metadata, and compatible adapted material use `CC-BY-SA-4.0`. CC-CEDICT and English Wiktionary material use CC-BY-SA-4.0. Chinese Notes uses CC-BY-SA-3.0, whose adapter-license clause permits a later BY-SA version with the same license elements. WordNet-derived English morphology remains under the separate Princeton WordNet License; see `LICENSE-WORDNET.txt`. English Wiktionary also offers a GFDL option upstream, but this bundle uses its CC-BY-SA-4.0 option.
 
-Redistributors must ship `LICENSE-DATA.txt`, `NOTICE.md`, `manifest.json`, and `wiktionary-attribution.json` with the data, retain the source and modification notices, license adaptations compatibly, and avoid implying upstream endorsement. See the checked-in [licensing and attribution notice](NOTICE.md) for the complete record.
+Redistributors must ship `LICENSE-DATA.txt`, `LICENSE-WORDNET.txt`, `NOTICE.md`, `manifest.json`, and `wiktionary-attribution.json` with the data, retain the source and modification notices, license adaptations compatibly, and avoid implying upstream endorsement. See the checked-in [licensing and attribution notice](NOTICE.md) for the complete record.
 
 The creator validates structure, pronunciation scope, attribution, deterministic combination, and cross-references. It does not independently certify the linguistic accuracy of source claims.

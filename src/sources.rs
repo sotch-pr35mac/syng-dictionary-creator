@@ -1,3 +1,5 @@
+//! Build-time adapters and diagnostics for the pinned dictionary sources.
+
 mod cedict;
 mod chinese_notes;
 mod wiktionary;
@@ -10,6 +12,7 @@ use std::collections::BTreeMap;
 use std::fs::File;
 use std::io::BufReader;
 use std::path::{Path, PathBuf};
+use std::time::Instant;
 
 #[derive(Clone, Debug)]
 pub(crate) struct ParsedRecord {
@@ -28,6 +31,7 @@ pub(crate) struct ParsedRecord {
 }
 
 impl ParsedRecord {
+    /// Returns the complete identity tuple when all three required fields exist.
     pub fn valid_tuple(&self) -> Option<(&str, &str, &Pinyin)> {
         Some((
             self.simplified.as_deref()?,
@@ -37,32 +41,48 @@ impl ParsedRecord {
     }
 }
 
+/// Source-scoped build counts and categorized diagnostics.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct SourceReport {
+    /// Number of raw records presented to the source adapter.
     pub input_records: u64,
+    /// Number of records that contributed published content.
     pub admitted_records: u64,
+    /// Number of valid records intentionally suppressed by combination policy.
     pub suppressed_records: u64,
+    /// Number of records rejected because they could not be published safely.
     pub rejected_records: u64,
+    /// Number of definitions emitted before cross-source deduplication.
     pub emitted_definitions: u64,
+    /// Number of Wiktionary quotations excluded from the artifact.
     pub excluded_quotations: u64,
+    /// Number of example-like values excluded because their type was not reviewed.
     pub excluded_unknown_examples: u64,
+    /// Stable diagnostic code counts for rejected or excluded source material.
     pub diagnostics: BTreeMap<String, u64>,
 }
 
 impl SourceReport {
+    /// Increments one stable diagnostic code.
     pub(crate) fn diagnose(&mut self, code: impl Into<String>) {
         *self.diagnostics.entry(code.into()).or_default() += 1;
     }
 }
 
+/// Aggregate accounting for one complete dictionary build.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct BuildReport {
+    /// Per-source input and outcome counts.
     pub sources: BTreeMap<Source, SourceReport>,
+    /// Number of lexical units in the completed combination.
     pub lexical_units: u64,
+    /// Number of definitions in the completed combination.
     pub definitions: u64,
+    /// Number of cited Chinese Notes glosses suppressed as potentially stale.
     pub suppressed_stale_chinese_notes_glosses: u64,
 }
 
+/// Parses every required source artifact in deterministic source order.
 pub(crate) fn parse_all(
     source_lock: &SourceLock,
     cache_directory: &Path,
@@ -70,14 +90,24 @@ pub(crate) fn parse_all(
     let mut records = Vec::new();
     let mut report = BuildReport::default();
 
+    let stage_started = Instant::now();
+    eprintln!("Parsing CC-CEDICT...");
     let cedict_path = artifact_path(source_lock, cache_directory, Source::CcCedict, "dictionary")?;
     let cedict_file =
         File::open(&cedict_path).with_context(|| format!("open {}", cedict_path.display()))?;
-    records.extend(cedict::parse(
+    let parsed = cedict::parse(
         BufReader::new(cedict_file),
         report_for(&mut report, Source::CcCedict),
-    )?);
+    )?;
+    eprintln!(
+        "Parsed {} CC-CEDICT records in {:.1?}.",
+        parsed.len(),
+        stage_started.elapsed()
+    );
+    records.extend(parsed);
 
+    let stage_started = Instant::now();
+    eprintln!("Parsing Chinese Notes...");
     let notes_path = artifact_path(
         source_lock,
         cache_directory,
@@ -86,11 +116,19 @@ pub(crate) fn parse_all(
     )?;
     let notes_file =
         File::open(&notes_path).with_context(|| format!("open {}", notes_path.display()))?;
-    records.extend(chinese_notes::parse(
+    let parsed = chinese_notes::parse(
         BufReader::new(notes_file),
         report_for(&mut report, Source::ChineseNotes),
-    )?);
+    )?;
+    eprintln!(
+        "Parsed {} Chinese Notes records in {:.1?}.",
+        parsed.len(),
+        stage_started.elapsed()
+    );
+    records.extend(parsed);
 
+    let stage_started = Instant::now();
+    eprintln!("Parsing Wiktionary...");
     let wiktionary_path = artifact_path(
         source_lock,
         cache_directory,
@@ -100,18 +138,26 @@ pub(crate) fn parse_all(
     let wiktionary_file = File::open(&wiktionary_path)
         .with_context(|| format!("open {}", wiktionary_path.display()))?;
     let decoder = flate2::read::GzDecoder::new(wiktionary_file);
-    records.extend(wiktionary::parse(
+    let parsed = wiktionary::parse(
         BufReader::new(decoder),
         report_for(&mut report, Source::Wiktionary),
-    )?);
+    )?;
+    eprintln!(
+        "Parsed {} Wiktionary records in {:.1?}.",
+        parsed.len(),
+        stage_started.elapsed()
+    );
+    records.extend(parsed);
 
     Ok((records, report))
 }
 
+/// Returns the report bucket for a source, creating it on first use.
 fn report_for(report: &mut BuildReport, source: Source) -> &mut SourceReport {
     report.sources.entry(source).or_default()
 }
 
+/// Locates one required cached artifact without triggering an implicit fetch.
 fn artifact_path(
     source_lock: &SourceLock,
     cache_directory: &Path,
@@ -130,6 +176,7 @@ fn artifact_path(
     Ok(path)
 }
 
+/// Constructs a rejected record while preserving its diagnostic provenance.
 pub(crate) fn rejected_record(
     source: Source,
     order: u64,

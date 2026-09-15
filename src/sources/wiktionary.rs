@@ -1,3 +1,5 @@
+//! Streaming adapter for retained Chinese entries from English Wiktionary JSONL.
+
 use super::{ParsedRecord, SourceReport, rejected_record};
 use crate::model::{
     Definition, Example, LexicalKind, PartOfSpeech, Qualifier, QualifierCategory, Source, Sourced,
@@ -72,6 +74,7 @@ struct WikiExample {
     translation: Option<String>,
 }
 
+/// Streams JSONL entries and produces bounded, source-scoped parser records.
 pub(crate) fn parse(reader: impl BufRead, report: &mut SourceReport) -> Result<Vec<ParsedRecord>> {
     let mut records = Vec::new();
     for (retained_index, line) in reader.lines().enumerate() {
@@ -108,6 +111,7 @@ pub(crate) fn parse(reader: impl BufRead, report: &mut SourceReport) -> Result<V
     Ok(records)
 }
 
+/// Assigns explicit Mandarin pronunciation evidence and converts publishable senses.
 fn parse_entry(
     entry: WikiEntry,
     source_line: u64,
@@ -275,6 +279,7 @@ fn parse_entry(
     })
 }
 
+/// Maps the reviewed Wiktionary part-of-speech vocabulary into closed enums.
 fn map_pos(value: &str) -> Result<(Option<PartOfSpeech>, Option<LexicalKind>)> {
     let result = match value {
         "noun" => (Some(PartOfSpeech::Noun), None),
@@ -305,6 +310,7 @@ fn map_pos(value: &str) -> Result<(Option<PartOfSpeech>, Option<LexicalKind>)> {
     Ok(result)
 }
 
+/// Detects tags that explicitly exclude a sense from Mandarin lexical entities.
 fn explicitly_non_mandarin(tags: &[String]) -> bool {
     const NON_MANDARIN: &[&str] = &[
         "Cantonese",
@@ -320,6 +326,7 @@ fn explicitly_non_mandarin(tags: &[String]) -> bool {
     tags.iter().any(|tag| NON_MANDARIN.contains(&tag.as_str()))
 }
 
+/// Returns whether a topic is approved for structured domain publication.
 fn reviewed_topic(value: &str) -> bool {
     matches!(
         value,
@@ -351,6 +358,7 @@ fn reviewed_topic(value: &str) -> bool {
     )
 }
 
+/// Maps a reviewed usage tag into its structured qualifier category.
 fn map_tag(value: &str) -> Option<Qualifier> {
     let (category, mapped_value) = match value {
         "archaic" | "dated" | "obsolete" | "rare" => (QualifierCategory::Usage, value),

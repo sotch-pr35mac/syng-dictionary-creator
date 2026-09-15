@@ -1,3 +1,5 @@
+//! Serialization, licensing notices, publication, and validation of output bundles.
+
 use crate::lock::SourceLock;
 use crate::model::{BinaryEnvelope, LexicalId, LexicalUnit, SCHEMA_VERSION, Sourced};
 use crate::pinyin::from_numbered;
@@ -13,6 +15,7 @@ use std::fs::{self, File};
 use std::io::{BufWriter, Write};
 use std::path::{Path, PathBuf};
 use std::sync::LazyLock;
+use std::time::Instant;
 
 const CHECKSUMMED_FILES: &[&str] = &[
     "data.dictionary",
@@ -85,12 +88,15 @@ type DataMap = BTreeMap<RuntimeKey, LexicalUnit>;
 type SearchIndex = BTreeMap<String, Vec<RuntimeKey>>;
 type IdentityIndex = BTreeMap<LexicalId, RuntimeKey>;
 
+/// Writes, validates, and atomically publishes a complete bundle directory.
 pub(crate) fn write_bundle(
     output_directory: &Path,
     source_lock: &SourceLock,
     lexical_units: Vec<LexicalUnit>,
     report: BuildReport,
 ) -> Result<()> {
+    let started = Instant::now();
+    let lexical_unit_count = lexical_units.len();
     let temporary_directory = temporary_output_path(output_directory);
     if temporary_directory.exists() {
         fs::remove_dir_all(&temporary_directory).with_context(|| {
@@ -107,19 +113,33 @@ pub(crate) fn write_bundle(
         )
     })?;
 
+    eprintln!(
+        "Writing {lexical_unit_count} lexical units to temporary bundle {}...",
+        temporary_directory.display()
+    );
     let bundle_result =
-        write_temporary_bundle(&temporary_directory, source_lock, lexical_units, report)
-            .and_then(|()| validate_bundle(&temporary_directory));
+        write_temporary_bundle(&temporary_directory, source_lock, lexical_units, report).and_then(
+            |()| {
+                eprintln!("Validating temporary bundle...");
+                validate_bundle(&temporary_directory)
+            },
+        );
     if let Err(error) = bundle_result {
         let _ = fs::remove_dir_all(&temporary_directory);
         return Err(error);
     }
 
+    eprintln!("Publishing validated bundle atomically...");
     publish_directory(&temporary_directory, output_directory)?;
-    println!("published {}", output_directory.display());
+    eprintln!(
+        "Published {} in {:.1?}.",
+        output_directory.display(),
+        started.elapsed()
+    );
     Ok(())
 }
 
+/// Builds every ordered artifact inside an unpublished temporary directory.
 fn write_temporary_bundle(
     directory: &Path,
     source_lock: &SourceLock,
@@ -251,6 +271,7 @@ fn write_temporary_bundle(
     Ok(())
 }
 
+/// Renders the redistributable source and licensing notice from locked metadata.
 fn notice(source_lock: &SourceLock) -> String {
     let mut notice = format!(
         "# Syng dictionary data notices\n\nThe generated dictionary bundle is an adapted database licensed under [{BUNDLE_LICENSE}]({BUNDLE_LICENSE_URL}). The creator software is separate and licensed under GPL-3.0-only.\n\n**Changes made:** {BUNDLE_MODIFICATIONS}\n\nNo upstream project or contributor endorses Syng or this bundle. Source claims and data are provided without warranties.\n"
@@ -274,6 +295,7 @@ fn notice(source_lock: &SourceLock) -> String {
     notice
 }
 
+/// Returns whether any published assertion in an entity cites a given source.
 fn has_source(unit: &LexicalUnit, source: crate::model::Source) -> bool {
     unit.alternative_pronunciations
         .iter()
@@ -319,6 +341,7 @@ fn has_source(unit: &LexicalUnit, source: crate::model::Source) -> bool {
         })
 }
 
+/// Generates lookup keys for primary, entity-scoped, and definition-scoped Pinyin.
 fn pinyin_keys(unit: &LexicalUnit) -> BTreeSet<String> {
     let mut keys = BTreeSet::new();
     add_pinyin_keys(&mut keys, &unit.pinyin);
@@ -333,6 +356,7 @@ fn pinyin_keys(unit: &LexicalUnit) -> BTreeSet<String> {
     keys
 }
 
+/// Adds marked, numbered, and toneless lookup forms for one pronunciation.
 fn add_pinyin_keys(keys: &mut BTreeSet<String>, pinyin: &crate::model::Pinyin) {
     keys.insert(
         pinyin
@@ -353,6 +377,7 @@ fn add_pinyin_keys(keys: &mut BTreeSet<String>, pinyin: &crate::model::Pinyin) {
     );
 }
 
+/// Reproduces the intentionally limited legacy English-gloss lookup behavior.
 fn english_keys(gloss: &str) -> BTreeSet<String> {
     let without_parenthetical = FIRST_PARENTHETICAL.replace(gloss, "");
     let normalized = DIGIT_OR_PUNCTUATION
@@ -371,10 +396,12 @@ fn english_keys(gloss: &str) -> BTreeSet<String> {
     keys
 }
 
+/// Appends a runtime key to one lookup term before final sorting.
 fn insert_index(index: &mut SearchIndex, key: String, runtime_key: RuntimeKey) {
     index.entry(key).or_default().push(runtime_key);
 }
 
+/// Sorts and deduplicates each lookup posting list.
 fn sort_index_values(index: &mut SearchIndex) {
     for runtime_keys in index.values_mut() {
         runtime_keys.sort_unstable();
@@ -382,6 +409,7 @@ fn sort_index_values(index: &mut SearchIndex) {
     }
 }
 
+/// Serializes one deterministic bincode payload inside its schema envelope.
 fn write_binary<T: Serialize>(directory: &Path, name: &str, payload: &T) -> Result<()> {
     let path = directory.join(name);
     let file = File::create(&path).with_context(|| format!("create {}", path.display()))?;
@@ -398,6 +426,7 @@ fn write_binary<T: Serialize>(directory: &Path, name: &str, payload: &T) -> Resu
     Ok(())
 }
 
+/// Writes the sorted Chinese-term finite-state set.
 fn write_fst(directory: &Path, terms: BTreeSet<String>) -> Result<()> {
     let set = Set::from_iter(terms.iter().map(String::as_str)).context("build Chinese FST")?;
     let path = directory.join("chinese.fst");
@@ -406,6 +435,7 @@ fn write_fst(directory: &Path, terms: BTreeSet<String>) -> Result<()> {
     Ok(())
 }
 
+/// Writes stable pretty JSON with one trailing newline.
 fn write_json(path: PathBuf, value: &impl Serialize) -> Result<()> {
     let mut bytes = serde_json::to_vec_pretty(value)?;
     bytes.push(b'\n');
@@ -413,6 +443,7 @@ fn write_json(path: PathBuf, value: &impl Serialize) -> Result<()> {
     Ok(())
 }
 
+/// Validates schema, licensing, checksums, identities, attribution, and indexes.
 pub fn validate_bundle(directory: &Path) -> Result<()> {
     let manifest: Manifest = serde_json::from_slice(
         &fs::read(directory.join("manifest.json")).context("read manifest.json")?,
@@ -517,6 +548,17 @@ pub fn validate_bundle(directory: &Path) -> Result<()> {
         if from_numbered(&unit.pinyin.numbers)? != unit.pinyin {
             bail!("noncanonical pinyin for {}", unit.id);
         }
+        for lookup_key in pinyin_keys(unit) {
+            if !pinyin
+                .get(&lookup_key)
+                .is_some_and(|runtime_keys| runtime_keys.binary_search(runtime_key).is_ok())
+            {
+                bail!(
+                    "pinyin index omits lookup key {lookup_key:?} for {}",
+                    unit.id
+                );
+            }
+        }
         validate_sources(unit)?;
         let has_wiktionary = has_source(unit, crate::model::Source::Wiktionary);
         let attribution_urls = wiktionary_attribution.entries.get(&unit.id);
@@ -568,6 +610,7 @@ pub fn validate_bundle(directory: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Validates the reviewed license policy copied into the bundle manifest.
 fn validate_manifest_licensing(manifest: &Manifest) -> Result<()> {
     for source in &manifest.source_pins {
         let expected_license = match source.source {
@@ -589,6 +632,7 @@ fn validate_manifest_licensing(manifest: &Manifest) -> Result<()> {
     Ok(())
 }
 
+/// Requires source attribution on every published value within an entity.
 fn validate_sources(unit: &LexicalUnit) -> Result<()> {
     for definition in &unit.english {
         require_sources(&definition.gloss, "definition gloss")?;
@@ -626,6 +670,7 @@ fn validate_sources(unit: &LexicalUnit) -> Result<()> {
     Ok(())
 }
 
+/// Rejects a shipped metadata value that lacks source attribution.
 fn require_sources<T>(value: &Sourced<T>, kind: &str) -> Result<()> {
     if value.sources.is_empty() {
         bail!("{kind} has no source attribution");
@@ -633,6 +678,7 @@ fn require_sources<T>(value: &Sourced<T>, kind: &str) -> Result<()> {
     Ok(())
 }
 
+/// Reads one binary payload and enforces its schema envelope.
 fn read_binary<T: DeserializeOwned>(directory: &Path, name: &str) -> Result<T> {
     let path = directory.join(name);
     let file = File::open(&path).with_context(|| format!("open {}", path.display()))?;
@@ -648,6 +694,7 @@ fn read_binary<T: DeserializeOwned>(directory: &Path, name: &str) -> Result<T> {
     Ok(envelope.payload)
 }
 
+/// Computes lowercase SHA-256 checksums for the named bundle files.
 fn checksums(directory: &Path, names: &[&str]) -> Result<BTreeMap<String, String>> {
     names
         .iter()
@@ -659,6 +706,7 @@ fn checksums(directory: &Path, names: &[&str]) -> Result<BTreeMap<String, String
         .collect()
 }
 
+/// Derives a process-scoped sibling path used for atomic bundle publication.
 fn temporary_output_path(output_directory: &Path) -> PathBuf {
     let name = output_directory
         .file_name()
@@ -667,6 +715,7 @@ fn temporary_output_path(output_directory: &Path) -> PathBuf {
     output_directory.with_file_name(format!(".{name}.tmp-{}", std::process::id()))
 }
 
+/// Atomically swaps a validated temporary directory into its final location.
 fn publish_directory(temporary_directory: &Path, output_directory: &Path) -> Result<()> {
     let backup_directory = output_directory.with_extension("dictionary-backup");
     if backup_directory.exists() {
@@ -699,7 +748,7 @@ fn publish_directory(temporary_directory: &Path, output_directory: &Path) -> Res
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{Definition, HskLevels, Source};
+    use crate::model::{AlternativePronunciation, Definition, HskLevels, Source};
     use tempfile::TempDir;
 
     fn unit() -> LexicalUnit {
@@ -797,6 +846,63 @@ mod tests {
         assert!(keys.contains("yānhuǒ"));
         assert!(keys.contains("yan1huo3"));
         assert!(keys.contains("yanhuo"));
+    }
+
+    #[test]
+    fn pinyin_dictionary_indexes_entity_and_definition_alternatives() {
+        let temporary = TempDir::new().unwrap();
+        let output = temporary.path().join("bundle");
+        let mut lexical_unit = unit();
+        let entity_alternative = from_numbered("yan1 huo5").unwrap();
+        let definition_alternative = from_numbered("yan1 huo4").unwrap();
+        lexical_unit.alternative_pronunciations.push(Sourced::one(
+            AlternativePronunciation {
+                pronunciation: entity_alternative.clone(),
+                label: "also pr.".to_owned(),
+            },
+            Source::CcCedict,
+        ));
+        lexical_unit.english[0]
+            .alternative_pronunciations
+            .push(Sourced::one(
+                AlternativePronunciation {
+                    pronunciation: definition_alternative.clone(),
+                    label: "Taiwan pr.".to_owned(),
+                },
+                Source::CcCedict,
+            ));
+        let lexical_id = lexical_unit.id.clone();
+
+        write_bundle(
+            &output,
+            &empty_lock(),
+            vec![lexical_unit],
+            BuildReport::default(),
+        )
+        .unwrap();
+
+        let identity: IdentityIndex = read_binary(&output, "identity.dictionary").unwrap();
+        let pinyin: SearchIndex = read_binary(&output, "pinyin.dictionary").unwrap();
+        let runtime_key = identity[&lexical_id];
+        for pronunciation in [entity_alternative, definition_alternative] {
+            for lookup_key in [
+                pronunciation
+                    .marks
+                    .chars()
+                    .filter(|character| !character.is_whitespace())
+                    .collect::<String>()
+                    .to_lowercase(),
+                pronunciation.numbers.to_lowercase(),
+                pronunciation
+                    .numbers
+                    .chars()
+                    .filter(|character| !character.is_ascii_digit())
+                    .collect::<String>()
+                    .to_lowercase(),
+            ] {
+                assert_eq!(pinyin.get(&lookup_key), Some(&vec![runtime_key]));
+            }
+        }
     }
 
     #[test]

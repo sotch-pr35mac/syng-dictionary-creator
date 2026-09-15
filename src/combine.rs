@@ -1,3 +1,5 @@
+//! Deterministic two-pass admission and cross-source combination.
+
 use crate::model::{Definition, HskLevel, HskLevels, LexicalId, LexicalUnit, Source, Sourced};
 use crate::sources::{BuildReport, ParsedRecord};
 use anyhow::{Result, bail};
@@ -9,6 +11,7 @@ struct UnitBuilder {
     has_cedict: bool,
 }
 
+/// Combines parsed records by exact persistent identity and accounts for every outcome.
 pub(crate) fn combine(
     mut records: Vec<ParsedRecord>,
     report: &mut BuildReport,
@@ -75,6 +78,7 @@ pub(crate) fn combine(
     Ok(lexical_units)
 }
 
+/// Admits a record with a complete identity tuple or merges it into that entity.
 fn admit(
     record: ParsedRecord,
     units: &mut BTreeMap<LexicalId, UnitBuilder>,
@@ -108,6 +112,7 @@ fn admit(
     Ok(())
 }
 
+/// Merges one assigned source record while preserving definition order and attribution.
 fn merge_record(builder: &mut UnitBuilder, record: ParsedRecord, report: &mut BuildReport) {
     let source_report = report.sources.entry(record.source).or_default();
     let _diagnostic_locator = &record.locator;
@@ -157,6 +162,7 @@ fn merge_record(builder: &mut UnitBuilder, record: ParsedRecord, report: &mut Bu
     }
 }
 
+/// Tests whether incomplete evidence uniquely and noncontradictorily names an entity.
 fn record_matches_existing(record: &ParsedRecord, unit: &LexicalUnit) -> bool {
     let Some(pinyin) = &record.pinyin else {
         return false;
@@ -181,6 +187,7 @@ fn record_matches_existing(record: &ParsedRecord, unit: &LexicalUnit) -> bool {
         .any(|headword| headword == &unit.simplified || headword == &unit.traditional)
 }
 
+/// Aggregates independently sourced metadata for an exact definition match.
 fn merge_definition(existing: &mut Definition, incoming: Definition) {
     merge_sources(&mut existing.gloss.sources, incoming.gloss.sources);
     merge_values(&mut existing.context, incoming.context);
@@ -196,6 +203,7 @@ fn merge_definition(existing: &mut Definition, incoming: Definition) {
     merge_values(&mut existing.measure_words, incoming.measure_words);
 }
 
+/// Deduplicates equal metadata values while aggregating their source lists.
 fn merge_values<T: Eq>(existing: &mut Vec<Sourced<T>>, incoming: Vec<Sourced<T>>) {
     for incoming_value in incoming {
         if let Some(existing_value) = existing
@@ -209,6 +217,7 @@ fn merge_values<T: Eq>(existing: &mut Vec<Sourced<T>>, incoming: Vec<Sourced<T>>
     }
 }
 
+/// Deduplicates source attribution in stable source-priority order.
 fn merge_sources(existing: &mut Vec<Source>, incoming: Vec<Source>) {
     for source in incoming {
         if !existing.contains(&source) {
@@ -218,6 +227,7 @@ fn merge_sources(existing: &mut Vec<Source>, incoming: Vec<Source>) {
     existing.sort_by_key(|source| source_rank(*source));
 }
 
+/// Tests whether a Chinese Notes definition contributes more than a differing gloss.
 fn has_non_english_enrichment(definition: &Definition) -> bool {
     !definition.context.is_empty()
         || !definition.examples.is_empty()
@@ -229,6 +239,7 @@ fn has_non_english_enrichment(definition: &Definition) -> bool {
         || !definition.measure_words.is_empty()
 }
 
+/// Removes alternates whose exact tuple is already represented by a lexical entity.
 fn remove_entity_alternatives(
     unit: &mut LexicalUnit,
     identities: &BTreeSet<LexicalId>,
@@ -256,6 +267,7 @@ fn remove_entity_alternatives(
     Ok(())
 }
 
+/// Resolves all supported HSK memberships for a lexical tuple.
 fn hsk_levels(simplified: &str, pinyin: &str) -> HskLevels {
     let matches = levels_all(HskQuery::new(simplified).pinyin(pinyin))
         .or_else(|_| levels_all(HskQuery::new(simplified)))
@@ -286,6 +298,7 @@ fn hsk_levels(simplified: &str, pinyin: &str) -> HskLevels {
     result
 }
 
+/// Returns deterministic precedence for definitions and source attribution.
 const fn source_rank(source: Source) -> u8 {
     match source {
         Source::CcCedict => 0,

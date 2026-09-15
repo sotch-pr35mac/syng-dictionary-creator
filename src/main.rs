@@ -1,3 +1,5 @@
+//! Command-line interface for fetching, building, and validating dictionary bundles.
+
 use anyhow::{Context, Result, bail};
 use std::env;
 use std::path::PathBuf;
@@ -11,6 +13,7 @@ struct Cli {
     lock_file: PathBuf,
 }
 
+/// Parses the command and shared filesystem options from process arguments.
 fn parse_cli() -> Result<Cli> {
     let mut arguments = env::args().skip(1);
     let command = arguments.next().unwrap_or_else(|| "help".to_owned());
@@ -40,6 +43,7 @@ fn parse_cli() -> Result<Cli> {
     })
 }
 
+/// Dispatches the selected command to the dictionary creator library.
 fn run() -> Result<()> {
     let cli = parse_cli()?;
     let options = BuildOptions {
@@ -62,6 +66,7 @@ fn run() -> Result<()> {
     }
 }
 
+/// Reports any command failure and returns a non-zero process status.
 fn main() {
     if let Err(error) = run() {
         eprintln!("error: {error:#}");

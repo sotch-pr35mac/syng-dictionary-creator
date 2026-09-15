@@ -1,3 +1,5 @@
+//! Typed adapter for CC-CEDICT V1 and V2 text records.
+
 use super::{ParsedRecord, SourceReport, rejected_record};
 use crate::model::{
     AlternativePronunciation, Definition, LexicalId, Qualifier, QualifierCategory, Source, Sourced,
@@ -20,6 +22,7 @@ static ALTERNATIVE: LazyLock<Regex> = LazyLock::new(|| {
 static LEADING_QUALIFIER: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^\(([^()]*)\)\s*").expect("qualifier regex"));
 
+/// Parses a complete CC-CEDICT stream while retaining an outcome for every entry.
 pub(crate) fn parse(reader: impl BufRead, report: &mut SourceReport) -> Result<Vec<ParsedRecord>> {
     let mut records = Vec::new();
     for (line_index, line) in reader.lines().enumerate() {
@@ -44,6 +47,7 @@ pub(crate) fn parse(reader: impl BufRead, report: &mut SourceReport) -> Result<V
     Ok(records)
 }
 
+/// Parses one V1 or V2 data line and scopes recognized annotations precisely.
 pub(crate) fn parse_line(line: &str, line_number: u64) -> Result<ParsedRecord> {
     let captures = ENTRY
         .captures(line)
@@ -123,6 +127,7 @@ pub(crate) fn parse_line(line: &str, line_number: u64) -> Result<ParsedRecord> {
     })
 }
 
+/// Resolves a comma-delimited `CL:` annotation into stable classifier identities.
 fn parse_classifiers(value: &str, source: Source) -> Result<Vec<Sourced<LexicalId>>> {
     let mut results = Vec::new();
     for raw_classifier in value.split(',') {
@@ -152,6 +157,7 @@ fn parse_classifiers(value: &str, source: Source) -> Result<Vec<Sourced<LexicalI
     Ok(results)
 }
 
+/// Parses one reviewed `Taiwan pr.` or `also pr.` annotation.
 fn parse_alternatives(value: &str) -> Result<Vec<Sourced<AlternativePronunciation>>> {
     let mut results = Vec::new();
     for capture in ALTERNATIVE.captures_iter(value) {
@@ -168,6 +174,7 @@ fn parse_alternatives(value: &str) -> Result<Vec<Sourced<AlternativePronunciatio
     Ok(results)
 }
 
+/// Removes only approved leading parenthetical qualifiers from a gloss.
 fn extract_qualifiers(value: &str) -> (String, Vec<Sourced<Qualifier>>) {
     let mut remainder = value.trim().to_owned();
     let mut qualifiers = Vec::new();

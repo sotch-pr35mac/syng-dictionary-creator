@@ -1,3 +1,5 @@
+//! Source-lock loading, licensing gates, downloading, and checksum verification.
+
 use crate::BuildOptions;
 use crate::model::{SCHEMA_VERSION, Source};
 use anyhow::{Context, Result, bail};
@@ -44,6 +46,7 @@ pub(crate) enum Preparation {
     WiktionaryChinese,
 }
 
+/// Loads the source lock, validates legal metadata, and optionally verifies every cache entry.
 pub(crate) fn load_and_verify(options: &BuildOptions, require_all: bool) -> Result<SourceLock> {
     let bytes = fs::read(&options.lock_file)
         .with_context(|| format!("read source lock {}", options.lock_file.display()))?;
@@ -72,6 +75,7 @@ pub(crate) fn load_and_verify(options: &BuildOptions, require_all: bool) -> Resu
     Ok(source_lock)
 }
 
+/// Blocks publication unless every source carries the exact reviewed license metadata.
 fn validate_license_metadata(source_lock: &SourceLock) -> Result<()> {
     for pin in &source_lock.artifacts {
         let expected_license = match pin.source {
@@ -111,6 +115,7 @@ fn validate_license_metadata(source_lock: &SourceLock) -> Result<()> {
     Ok(())
 }
 
+/// Fetches missing or invalid cache artifacts and verifies all final checksums.
 pub(crate) fn fetch_all(options: &BuildOptions) -> Result<()> {
     let source_lock = load_and_verify(options, false)?;
     fs::create_dir_all(&options.cache_directory).with_context(|| {
@@ -144,6 +149,7 @@ pub(crate) fn fetch_all(options: &BuildOptions) -> Result<()> {
     Ok(())
 }
 
+/// Downloads one direct source artifact through a hashing temporary file.
 fn fetch_regular(client: &Client, pin: &SourcePin, path: &Path) -> Result<()> {
     let response = client
         .get(&pin.url)
@@ -177,6 +183,7 @@ fn fetch_regular(client: &Client, pin: &SourcePin, path: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Streams a Wiktionary dump into the retained Chinese-only JSONL cache artifact.
 fn fetch_wiktionary(client: &Client, pin: &SourcePin, path: &Path) -> Result<()> {
     let response = client
         .get(&pin.url)
@@ -227,6 +234,7 @@ fn fetch_wiktionary(client: &Client, pin: &SourcePin, path: &Path) -> Result<()>
     Ok(())
 }
 
+/// Selects Chinese-language dump records retained for typed parsing.
 fn is_retained_chinese(language_code: &str, language: &str) -> bool {
     const CODES: &[&str] = &[
         "zh", "cmn", "yue", "nan", "hak", "wuu", "gan", "hsn", "cdo", "cjy", "cpx", "mnp", "zhx",
@@ -234,6 +242,7 @@ fn is_retained_chinese(language_code: &str, language: &str) -> bool {
     CODES.contains(&language_code) || matches!(language, "Chinese" | "Mandarin" | "Cantonese")
 }
 
+/// Verifies one cached artifact against its pinned byte length and SHA-256 digest.
 fn verify_cached(pin: &SourcePin, path: &Path) -> Result<()> {
     let file = File::open(path).with_context(|| format!("open cached input {}", path.display()))?;
     let mut reader: Box<dyn Read> = match pin.preparation {
@@ -254,6 +263,7 @@ fn verify_cached(pin: &SourcePin, path: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Derives the recoverable partial-download sibling path for a cache artifact.
 fn partial_path(path: &Path) -> PathBuf {
     path.with_extension(format!(
         "{}.partial",
@@ -269,6 +279,7 @@ struct HashingReader<R> {
 }
 
 impl<R> HashingReader<R> {
+    /// Wraps a reader with an initially empty SHA-256 digest.
     fn new(inner: R) -> Self {
         Self {
             inner,
@@ -276,6 +287,7 @@ impl<R> HashingReader<R> {
         }
     }
 
+    /// Finalizes and returns the lowercase digest of all consumed bytes.
     fn finish(self) -> String {
         format!("{:x}", self.digest.finalize())
     }

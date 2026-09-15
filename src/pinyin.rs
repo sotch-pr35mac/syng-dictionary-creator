@@ -1,3 +1,5 @@
+//! Conservative Hanyu Pinyin parsing and canonicalization.
+
 use crate::model::Pinyin;
 use prettify_pinyin::prettify;
 use std::collections::HashSet;
@@ -34,15 +36,24 @@ static VALID_SYLLABLES: LazyLock<HashSet<&'static str>> = LazyLock::new(|| {
         .collect()
 });
 
+/// Reasons a pronunciation cannot be converted into canonical Mandarin Pinyin.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum PinyinError {
+    /// Input contains no pronunciation.
     Empty,
+    /// Input contains a character outside the accepted Pinyin syntax.
     InvalidCharacter,
+    /// A numbered syllable does not end in a tone from one through five.
     MissingTone,
+    /// A supplied tone is outside the range one through five.
     InvalidTone,
+    /// A token is not in the reviewed Hanyu Pinyin syllable vocabulary.
     InvalidSyllable(String),
+    /// The source explicitly marks the pronunciation as unavailable.
     NotApplicable,
+    /// Marked input admits more than one valid syllable segmentation.
     AmbiguousSegmentation,
+    /// No segmentation matches the expected Han-character count.
     SyllableCount,
 }
 
@@ -60,6 +71,7 @@ struct Syllable {
     tone: u8,
 }
 
+/// Parses numbered Pinyin into canonical display, identity, and tone forms.
 pub fn from_numbered(value: &str) -> Result<Pinyin, PinyinError> {
     let normalized = value.nfc().collect::<String>();
     if normalized.trim().is_empty() {
@@ -113,6 +125,7 @@ pub fn from_numbered(value: &str) -> Result<Pinyin, PinyinError> {
     Ok(make_pinyin(syllables))
 }
 
+/// Validates and appends one completed numbered syllable.
 fn push_numbered_syllable(
     syllables: &mut Vec<Syllable>,
     letters: &mut String,
@@ -138,6 +151,7 @@ fn push_numbered_syllable(
     Ok(())
 }
 
+/// Converts marked Pinyin only when exactly one reviewed segmentation is valid.
 pub fn from_marked(value: &str, han_character_count: Option<usize>) -> Result<Pinyin, PinyinError> {
     let normalized = value.nfc().collect::<String>();
     if normalized.trim().is_empty() {
@@ -185,6 +199,7 @@ pub fn from_marked(value: &str, han_character_count: Option<usize>) -> Result<Pi
     }
 }
 
+/// Enumerates all valid syllable segmentations of one unseparated marked chunk.
 fn segment_marked_chunk(chunk: &str) -> Result<Vec<Vec<Syllable>>, PinyinError> {
     let mut letters = Vec::new();
     let mut tones = Vec::new();
@@ -201,6 +216,7 @@ fn segment_marked_chunk(chunk: &str) -> Result<Vec<Vec<Syllable>>, PinyinError> 
     Ok(results)
 }
 
+/// Recursively enumerates segmentations from one character offset.
 fn segment_from(
     letters: &[char],
     tones: &[Option<u8>],
@@ -238,6 +254,7 @@ fn segment_from(
     }
 }
 
+/// Checks spelling against the reviewed Hanyu Pinyin syllable vocabulary.
 fn validate_syllable(value: &str) -> Result<(), PinyinError> {
     let lowercase = value.to_lowercase();
     if VALID_SYLLABLES.contains(lowercase.as_str()) {
@@ -247,6 +264,7 @@ fn validate_syllable(value: &str) -> Result<(), PinyinError> {
     }
 }
 
+/// Decomposes one accepted marked-Pinyin character into its base and tone.
 fn marked_character(character: char) -> Option<(char, Option<u8>)> {
     let result = match character {
         'ā' => ('a', Some(1)),
@@ -304,6 +322,7 @@ fn marked_character(character: char) -> Option<(char, Option<u8>)> {
     Some(result)
 }
 
+/// Builds the three canonical stored forms from validated syllables.
 fn make_pinyin(syllables: Vec<Syllable>) -> Pinyin {
     let spaced_numbers = syllables
         .iter()
@@ -317,6 +336,7 @@ fn make_pinyin(syllables: Vec<Syllable>) -> Pinyin {
     }
 }
 
+/// Counts characters from the Unicode Han ideograph ranges used for segmentation.
 pub fn han_character_count(value: &str) -> usize {
     value
         .chars()

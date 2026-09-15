@@ -1,3 +1,5 @@
+//! Typed adapter for the pinned 16-column Chinese Notes TSV export.
+
 use super::{ParsedRecord, SourceReport, rejected_record};
 use crate::model::{
     Definition, LexicalKind, PartOfSpeech, Qualifier, QualifierCategory, Source, Sourced,
@@ -7,6 +9,7 @@ use crate::pinyin::{from_marked, han_character_count};
 use anyhow::{Context, Result, bail};
 use std::io::BufRead;
 
+/// Parses a complete Chinese Notes TSV stream with per-row diagnostics.
 pub(crate) fn parse(reader: impl BufRead, report: &mut SourceReport) -> Result<Vec<ParsedRecord>> {
     let mut records = Vec::new();
     for (line_index, line) in reader.lines().enumerate() {
@@ -32,6 +35,7 @@ pub(crate) fn parse(reader: impl BufRead, report: &mut SourceReport) -> Result<V
     Ok(records)
 }
 
+/// Parses one exact 16-field row and applies reviewed grammar and note mappings.
 pub(crate) fn parse_line(line: &str, line_number: u64) -> Result<ParsedRecord> {
     let columns = line.split('\t').collect::<Vec<_>>();
     if columns.len() != 16 {
@@ -109,6 +113,7 @@ pub(crate) fn parse_line(line: &str, line_number: u64) -> Result<ParsedRecord> {
     })
 }
 
+/// Distinguishes a populated TSV field from the `\N` sentinel.
 fn is_value(value: &str) -> bool {
     !value.is_empty() && value != r"\N"
 }
@@ -118,6 +123,7 @@ enum Grammar {
     LexicalKind(LexicalKind),
 }
 
+/// Maps the closed Chinese Notes grammar vocabulary to shipped structured enums.
 fn map_grammar(value: &str) -> Result<Option<Grammar>> {
     if !is_value(value) {
         return Ok(None);
@@ -157,6 +163,7 @@ fn map_grammar(value: &str) -> Result<Option<Grammar>> {
     Ok(Some(grammar))
 }
 
+/// Extracts commentary only when it separates cleanly from bibliographic citations.
 fn substantive_commentary(notes: &str) -> Option<String> {
     if !is_value(notes) {
         return None;
@@ -182,6 +189,7 @@ fn substantive_commentary(notes: &str) -> Option<String> {
     }
 }
 
+/// Recognizes a note fragment that consists only of source bibliography.
 fn is_bibliography(value: &str) -> bool {
     contains_citation_marker(value)
         && value
@@ -189,6 +197,7 @@ fn is_bibliography(value: &str) -> bool {
             .all(|item| contains_citation_marker(item.trim()))
 }
 
+/// Detects reviewed citation markers without treating them as commentary.
 fn contains_citation_marker(value: &str) -> bool {
     [
         "CC-CEDICT",

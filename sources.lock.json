@@ -1,0 +1,57 @@
+{
+  "schema_version": 4,
+  "artifacts": [
+    {
+      "source": "cc-cedict",
+      "role": "dictionary",
+      "revision": "cedict-mixed:4d12024cd9547789; 2026-09-12T14:59:30Z",
+      "url": "https://cc-cedict.org/editor/editor_export_cedict.php?c=gz&v=0",
+      "cache_file": "cc-cedict.u8",
+      "download_sha256": "f3dd0a5d4f313ab75dcccc9d3196bc3e336901479ae690016d811e44ae132028",
+      "content_sha256": "4d12024cd9547789b0370a5973a98a6b02707a4b9437f56589c9ceb205be1405",
+      "preparation": "gzip",
+      "license": "CC-BY-SA-4.0",
+      "attribution": "CC-CEDICT community, published by MDBG; CEDICT originated by Paul Denisowski",
+      "parser_version": 1
+    },
+    {
+      "source": "chinese-notes",
+      "role": "dictionary",
+      "revision": "e98efc7424237890e8698d25e4f20d6a258253cc",
+      "url": "https://raw.githubusercontent.com/alexamies/chinesenotes.com/e98efc7424237890e8698d25e4f20d6a258253cc/data/cnotes_zh_en_dict.tsv",
+      "cache_file": "chinese-notes.tsv",
+      "download_sha256": "5fc5110a95ee533b9a5c3ccc50180690578c43defe075f73075a8f7abe084b6d",
+      "content_sha256": "5fc5110a95ee533b9a5c3ccc50180690578c43defe075f73075a8f7abe084b6d",
+      "preparation": "plain",
+      "license": "CC-BY-SA-3.0",
+      "attribution": "Chinese Notes; Fo Guang Shan and Nan Tien Institute; upstream contributors",
+      "parser_version": 1
+    },
+    {
+      "source": "chinese-notes",
+      "role": "grammar-vocabulary",
+      "revision": "e98efc7424237890e8698d25e4f20d6a258253cc",
+      "url": "https://raw.githubusercontent.com/alexamies/chinesenotes.com/e98efc7424237890e8698d25e4f20d6a258253cc/data/grammar.txt",
+      "cache_file": "chinese-notes-grammar.txt",
+      "download_sha256": "097a431e75b3df1b14ece3e76b23d5e71b7c76a94459e32efdc6ea1ba2f84647",
+      "content_sha256": "097a431e75b3df1b14ece3e76b23d5e71b7c76a94459e32efdc6ea1ba2f84647",
+      "preparation": "plain",
+      "license": "CC-BY-SA-3.0",
+      "attribution": "Chinese Notes; Fo Guang Shan and Nan Tien Institute; upstream contributors",
+      "parser_version": 1
+    },
+    {
+      "source": "wiktionary",
+      "role": "filtered-chinese-jsonl",
+      "revision": "enwiktionary-20260902; wiktextract ccec6f120efedd84f57fe0f1631e89408e9cb62a",
+      "url": "https://kaikki.org/dictionary/raw-wiktextract-data.jsonl.gz",
+      "cache_file": "wiktionary-chinese.jsonl.gz",
+      "download_sha256": "42e0bfe1669513cb89bd0a12f2e85d1a8f4ebedc70c65ec88c9509d0f5d392f9",
+      "content_sha256": "408377bdceebfe27a4cb4e135dad7c1a276de9801db75eb0cf512f36ef7dbe3b",
+      "preparation": "wiktionary-chinese",
+      "license": "CC-BY-SA-4.0 (Wiktionary entry text; GFDL alternative where applicable)",
+      "attribution": "English Wiktionary contributors; extracted by Wiktextract and distributed by Kaikki.org",
+      "parser_version": 1
+    }
+  ]
+}

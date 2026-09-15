@@ -1,6 +1,6 @@
 .DS_Store
 /target/
+.cache/
 **/*.rs.bk
 cc-cedict.json
-/out/*.dictionary
-/out/*.fst
+/out/

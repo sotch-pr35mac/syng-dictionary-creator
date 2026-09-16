@@ -78,6 +78,22 @@ fn is_separator(character: char) -> bool {
 
 /// Parses numbered Pinyin into canonical display, identity, and tone forms.
 pub fn from_numbered(value: &str) -> Result<Pinyin, PinyinError> {
+    Ok(make_pinyin(parse_numbered(value)?))
+}
+
+/// Validates numbered Pinyin and returns its canonical concatenated form.
+///
+/// Accepted separators are removed, `u:` and `v` spellings become `ü`, and
+/// source capitalization and tone numbers remain identity-significant.
+pub fn canonicalize_numbered(value: &str) -> Result<String, PinyinError> {
+    Ok(parse_numbered(value)?
+        .into_iter()
+        .map(|syllable| format!("{}{}", syllable.letters, syllable.tone))
+        .collect())
+}
+
+/// Parses numbered Pinyin without constructing unused display forms.
+fn parse_numbered(value: &str) -> Result<Vec<Syllable>, PinyinError> {
     let normalized = value.nfc().collect::<String>();
     if normalized.trim().is_empty() {
         return Err(PinyinError::Empty);
@@ -127,7 +143,7 @@ pub fn from_numbered(value: &str) -> Result<Pinyin, PinyinError> {
     if syllables.is_empty() {
         return Err(PinyinError::Empty);
     }
-    Ok(make_pinyin(syllables))
+    Ok(syllables)
 }
 
 /// Validates and appends one completed numbered syllable.

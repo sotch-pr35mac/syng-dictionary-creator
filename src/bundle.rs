@@ -1,14 +1,18 @@
 //! Serialization, licensing notices, publication, and validation of output bundles.
 
+use crate::dictionary_archive::{
+    ARCHIVE_CONTRACT, ArchivedChinesePostings, ArchivedDictionaryArchive, ArchivedPostingRange,
+    ChinesePostings, DictionaryArchive, IdentityMap, PostingRange,
+};
 use crate::english::{self, EnglishSearchReport};
 use crate::lock::{LockedArtifactSource, SourceLock};
-use crate::model::{BinaryEnvelope, LexicalId, LexicalUnit, SCHEMA_VERSION, Sourced};
+use crate::model::{IDENTITY_VERSION, LexicalId, LexicalUnit, SCHEMA_VERSION, Sourced};
 use crate::pinyin::from_numbered;
 use crate::sources::BuildReport;
 use anyhow::{Context, Result, bail};
-use fst::Set;
+use fst::Map;
 use percent_encoding::{NON_ALPHANUMERIC, utf8_percent_encode};
-use serde::{Deserialize, Serialize, de::DeserializeOwned};
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
@@ -17,26 +21,27 @@ use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 const CHECKSUMMED_FILES: &[&str] = &[
-    "data.dictionary.zst",
-    "simplified.dictionary.zst",
-    "traditional.dictionary.zst",
-    "pinyin.dictionary.zst",
+    "dictionary.rkyv.zst",
     "english.search.zst",
-    "identity.dictionary.zst",
-    "chinese.fst",
     "LICENSE-DATA.txt",
     "LICENSE-WORDNET.txt",
     "NOTICE.md",
     "wiktionary-attribution.json",
 ];
-const DICTIONARY_FILES: &[&str] = &[
+const LEGACY_DICTIONARY_FILES: &[&str] = &[
     "data.dictionary",
+    "data.dictionary.zst",
     "simplified.dictionary",
+    "simplified.dictionary.zst",
     "traditional.dictionary",
+    "traditional.dictionary.zst",
     "pinyin.dictionary",
+    "pinyin.dictionary.zst",
     "identity.dictionary",
+    "identity.dictionary.zst",
+    "chinese.fst",
 ];
-const ZSTD_LEVEL: i32 = 19;
+const ZSTD_LEVEL: i32 = 20;
 const BUNDLE_LICENSE: &str = "CC-BY-SA-4.0";
 const BUNDLE_LICENSE_URL: &str = "https://creativecommons.org/licenses/by-sa/4.0/";
 const BUNDLE_MODIFICATIONS: &str = "Syng Dictionary Creator parsed, normalized, filtered, structurally annotated, deduplicated exact matches, merged source material, assigned stable identities, and built search indexes. It excluded Wiktionary quotations.";
@@ -47,6 +52,7 @@ const WORDNET_LICENSE_TEXT: &str = include_str!("../LICENSE-WORDNET.txt");
 #[derive(Debug, Serialize, Deserialize)]
 struct Manifest {
     schema_version: u32,
+    archive_contract: String,
     creator_version: String,
     bundle_license: String,
     bundle_license_url: String,
@@ -161,7 +167,6 @@ fn write_temporary_bundle(
     let mut data = DataMap::new();
     let mut identity = IdentityIndex::new();
     let mut pinyin = SearchIndex::new();
-    let mut chinese_terms = BTreeSet::new();
     let mut wiktionary_entries = BTreeMap::new();
 
     for (runtime_index, unit) in lexical_units.into_iter().enumerate() {
@@ -178,8 +183,6 @@ fn write_temporary_bundle(
             wiktionary_entries.insert(unit.id.clone(), urls.into_iter().collect());
         }
         identity.insert(unit.id.clone(), runtime_key);
-        chinese_terms.insert(unit.simplified.clone());
-        chinese_terms.insert(unit.traditional.clone());
         for key in pinyin_keys(&unit) {
             insert_index(&mut pinyin, key, runtime_key);
         }
@@ -188,10 +191,6 @@ fn write_temporary_bundle(
     let (simplified, traditional) = headword_indexes(&data);
     sort_index_values(&mut pinyin);
 
-    write_binary(directory, "data.dictionary", &data)?;
-    write_binary(directory, "simplified.dictionary", &simplified)?;
-    write_binary(directory, "traditional.dictionary", &traditional)?;
-    write_binary(directory, "pinyin.dictionary", &pinyin)?;
     let wordnet_path = crate::sources::artifact_path(
         source_lock,
         cache_directory,
@@ -236,8 +235,25 @@ fn write_temporary_bundle(
         &english_search.compressed,
     )
     .context("write english.search.zst")?;
-    write_binary(directory, "identity.dictionary", &identity)?;
-    write_fst(directory, chinese_terms)?;
+    let (chinese_fst, chinese_postings, chinese_runtime_keys) =
+        build_chinese_index(&simplified, &traditional)?;
+    let (pinyin_fst, pinyin_postings, pinyin_runtime_keys) = build_index(&pinyin)?;
+    let mut identity_entries = identity
+        .iter()
+        .map(|(lexical_id, runtime_key)| (*lexical_id.digest(), *runtime_key))
+        .collect::<Vec<_>>();
+    identity_entries.sort_unstable_by_key(|(digest, _)| *digest);
+    let archive = DictionaryArchive::new(
+        data.into_values().collect(),
+        IdentityMap::new(identity_entries),
+        chinese_fst,
+        chinese_postings,
+        chinese_runtime_keys,
+        pinyin_fst,
+        pinyin_postings,
+        pinyin_runtime_keys,
+    );
+    write_archive(directory, &archive)?;
     fs::write(directory.join("LICENSE-DATA.txt"), LICENSE_DATA_TEXT)
         .context("write LICENSE-DATA.txt")?;
     fs::write(directory.join("LICENSE-WORDNET.txt"), WORDNET_LICENSE_TEXT)
@@ -294,6 +310,7 @@ fn write_temporary_bundle(
         .collect();
     let manifest = Manifest {
         schema_version: SCHEMA_VERSION,
+        archive_contract: String::from_utf8_lossy(ARCHIVE_CONTRACT).into_owned(),
         creator_version: env!("CARGO_PKG_VERSION").to_owned(),
         bundle_license: BUNDLE_LICENSE.to_owned(),
         bundle_license_url: BUNDLE_LICENSE_URL.to_owned(),
@@ -467,19 +484,13 @@ fn validate_headword_indexes(
     Ok(())
 }
 
-/// Serializes and deterministically compresses one schema-enveloped bincode payload.
-fn write_binary<T: Serialize>(directory: &Path, name: &str, payload: &T) -> Result<()> {
-    if !name.ends_with(".dictionary") {
-        bail!("binary artifact name must end in .dictionary");
-    }
-    let raw = bincode::serialize(&BinaryEnvelope {
-        schema_version: SCHEMA_VERSION,
-        payload,
-    })
-    .with_context(|| format!("serialize {name}"))?;
+/// Serializes and deterministically compresses the aligned rkyv root.
+fn write_archive(directory: &Path, archive: &DictionaryArchive) -> Result<()> {
+    let raw =
+        rkyv::to_bytes::<rkyv::rancor::Error>(archive).context("serialize dictionary archive")?;
     let compressed = compress_zstd(&raw)?;
-    let archive_name = format!("{name}.zst");
-    fs::write(directory.join(&archive_name), &compressed)
+    let archive_name = "dictionary.rkyv.zst";
+    fs::write(directory.join(archive_name), &compressed)
         .with_context(|| format!("write {archive_name}"))?;
     let ratio = 100.0 * compressed.len() as f64 / raw.len().max(1) as f64;
     eprintln!(
@@ -499,13 +510,54 @@ fn compress_zstd(raw: &[u8]) -> Result<Vec<u8>> {
     Ok(encoder.finish()?)
 }
 
-/// Writes the sorted Chinese-term finite-state set.
-fn write_fst(directory: &Path, terms: BTreeSet<String>) -> Result<()> {
-    let set = Set::from_iter(terms.iter().map(String::as_str)).context("build Chinese FST")?;
-    let path = directory.join("chinese.fst");
-    fs::write(&path, set.as_fst().as_bytes())
-        .with_context(|| format!("write {}", path.display()))?;
-    Ok(())
+/// Builds one sorted FST map and its flat postings storage.
+fn build_index(index: &SearchIndex) -> Result<(Vec<u8>, Vec<PostingRange>, Vec<RuntimeKey>)> {
+    let mut postings = Vec::with_capacity(index.len());
+    let mut runtime_keys = Vec::new();
+    let mut terms = Vec::with_capacity(index.len());
+    for (ordinal, (term, values)) in index.iter().enumerate() {
+        terms.push((term.as_str(), u64::try_from(ordinal)?));
+        postings.push(append_postings(&mut runtime_keys, values)?);
+    }
+    let map = Map::from_iter(terms).context("build lookup FST")?;
+    Ok((map.as_fst().as_bytes().to_vec(), postings, runtime_keys))
+}
+
+/// Builds the shared Chinese FST while retaining script-specific associations.
+fn build_chinese_index(
+    simplified: &SearchIndex,
+    traditional: &SearchIndex,
+) -> Result<(Vec<u8>, Vec<ChinesePostings>, Vec<RuntimeKey>)> {
+    let terms = simplified
+        .keys()
+        .chain(traditional.keys())
+        .cloned()
+        .collect::<BTreeSet<_>>();
+    let mut fst_entries = Vec::with_capacity(terms.len());
+    let mut postings = Vec::with_capacity(terms.len());
+    let mut runtime_keys = Vec::new();
+    for (ordinal, term) in terms.iter().enumerate() {
+        fst_entries.push((term.as_str(), u64::try_from(ordinal)?));
+        postings.push(ChinesePostings {
+            simplified: append_postings(
+                &mut runtime_keys,
+                simplified.get(term).map_or(&[], Vec::as_slice),
+            )?,
+            traditional: append_postings(
+                &mut runtime_keys,
+                traditional.get(term).map_or(&[], Vec::as_slice),
+            )?,
+        });
+    }
+    let map = Map::from_iter(fst_entries).context("build Chinese FST")?;
+    Ok((map.as_fst().as_bytes().to_vec(), postings, runtime_keys))
+}
+
+fn append_postings(flat: &mut Vec<RuntimeKey>, values: &[RuntimeKey]) -> Result<PostingRange> {
+    let start = u32::try_from(flat.len()).context("posting offset exceeds u32")?;
+    let len = u32::try_from(values.len()).context("posting length exceeds u32")?;
+    flat.extend_from_slice(values);
+    Ok(PostingRange { start, len })
 }
 
 /// Writes stable pretty JSON with one trailing newline.
@@ -525,7 +577,10 @@ pub fn validate_bundle(directory: &Path) -> Result<()> {
     if manifest.schema_version != SCHEMA_VERSION {
         bail!("unsupported manifest schema {}", manifest.schema_version);
     }
-    for name in DICTIONARY_FILES {
+    if manifest.archive_contract.as_bytes() != ARCHIVE_CONTRACT {
+        bail!("unsupported archive contract {}", manifest.archive_contract);
+    }
+    for name in LEGACY_DICTIONARY_FILES {
         if directory.join(name).exists() {
             bail!("legacy uncompressed artifact {name} must not be published");
         }
@@ -592,11 +647,48 @@ pub fn validate_bundle(directory: &Path) -> Result<()> {
         bail!("bundle file checksums do not match manifest");
     }
 
-    let data: DataMap = read_binary(directory, "data.dictionary")?;
-    let identity: IdentityIndex = read_binary(directory, "identity.dictionary")?;
-    let simplified: SearchIndex = read_binary(directory, "simplified.dictionary")?;
-    let traditional: SearchIndex = read_binary(directory, "traditional.dictionary")?;
-    let pinyin: SearchIndex = read_binary(directory, "pinyin.dictionary")?;
+    let compressed_archive =
+        fs::read(directory.join("dictionary.rkyv.zst")).context("read dictionary.rkyv.zst")?;
+    let decompressed_archive = zstd::stream::decode_all(compressed_archive.as_slice())
+        .context("decompress dictionary.rkyv.zst")?;
+    let mut archive_bytes = rkyv::util::AlignedVec::<16>::with_capacity(decompressed_archive.len());
+    archive_bytes.extend_from_slice(&decompressed_archive);
+    let archive = rkyv::access::<ArchivedDictionaryArchive, rkyv::rancor::Error>(&archive_bytes)
+        .context("validate dictionary archive")?;
+    if &archive.archive_contract != ARCHIVE_CONTRACT
+        || archive.schema_version.to_native() != SCHEMA_VERSION
+        || archive.identity_version != IDENTITY_VERSION
+    {
+        bail!("dictionary archive has incompatible format metadata");
+    }
+    let record_count = archive.lexical_units.len();
+    if archive.identities.len() != record_count {
+        bail!("identity index and data have different record counts");
+    }
+    let chinese_fst = Map::new(archive.chinese_fst.as_slice()).context("validate Chinese FST")?;
+    let pinyin_fst = Map::new(archive.pinyin_fst.as_slice()).context("validate Pinyin FST")?;
+    validate_archived_index(
+        "Chinese",
+        chinese_fst.len(),
+        archive.chinese_postings.len(),
+        archive.chinese_runtime_keys.as_slice(),
+        archive.chinese_postings.iter().flat_map(|postings| {
+            [&postings.simplified, &postings.traditional]
+                .map(|range| (range.start.to_native(), range.len.to_native()))
+        }),
+        record_count,
+    )?;
+    validate_archived_index(
+        "Pinyin",
+        pinyin_fst.len(),
+        archive.pinyin_postings.len(),
+        archive.pinyin_runtime_keys.as_slice(),
+        archive
+            .pinyin_postings
+            .iter()
+            .map(|range| (range.start.to_native(), range.len.to_native())),
+        record_count,
+    )?;
     if directory.join("english.dictionary").exists() {
         bail!("legacy english.dictionary must not be published");
     }
@@ -604,7 +696,7 @@ pub fn validate_bundle(directory: &Path) -> Result<()> {
         fs::read(directory.join("english.search.zst")).context("read english.search.zst")?;
     let raw_english = zstd::stream::decode_all(compressed_english.as_slice())
         .context("decompress english.search.zst")?;
-    english::validate_raw(&raw_english, u32::try_from(data.len())?)?;
+    english::validate_raw(&raw_english, u32::try_from(record_count)?)?;
     if manifest.english_search.compressed_bytes != compressed_english.len() as u64
         || manifest.english_search.uncompressed_bytes != raw_english.len() as u64
         || manifest.english_search.compressed_sha256
@@ -635,16 +727,31 @@ pub fn validate_bundle(directory: &Path) -> Result<()> {
     if wiktionary_attribution.explanation != WIKTIONARY_ATTRIBUTION_EXPLANATION {
         bail!("unsupported Wiktionary attribution explanation");
     }
-    let runtime_keys = data.keys().copied().collect::<BTreeSet<_>>();
-
-    if identity.len() != data.len() {
-        bail!("identity index and data have different record counts");
+    let data = archive
+        .lexical_units
+        .iter()
+        .enumerate()
+        .map(|(runtime_key, unit)| {
+            Ok((
+                u32::try_from(runtime_key)?,
+                rkyv::deserialize::<LexicalUnit, rkyv::rancor::Error>(unit)
+                    .context("deserialize lexical unit during semantic validation")?,
+            ))
+        })
+        .collect::<Result<DataMap>>()?;
+    let (simplified, traditional) = headword_indexes(&data);
+    let mut pinyin = SearchIndex::new();
+    for (runtime_key, unit) in &data {
+        for key in pinyin_keys(unit) {
+            insert_index(&mut pinyin, key, *runtime_key);
+        }
     }
+    sort_index_values(&mut pinyin);
     validate_headword_indexes(&data, &simplified, &traditional)?;
     if wiktionary_attribution
         .entries
         .keys()
-        .any(|lexical_id| !identity.contains_key(lexical_id))
+        .any(|lexical_id| archive.identities.get(lexical_id.digest()).is_none())
     {
         bail!("Wiktionary attribution contains an unknown lexical identity");
     }
@@ -653,11 +760,27 @@ pub fn validate_bundle(directory: &Path) -> Result<()> {
         if recomputed != unit.id {
             bail!("lexical identity does not recompute for runtime key {runtime_key}");
         }
-        if identity.get(&unit.id) != Some(runtime_key) {
+        if archive
+            .identities
+            .get(unit.id.digest())
+            .map(|value| value.to_native())
+            != Some(*runtime_key)
+        {
             bail!("identity index is inconsistent for {}", unit.id);
         }
         if from_numbered(&unit.pinyin.numbers)? != unit.pinyin {
             bail!("noncanonical pinyin for {}", unit.id);
+        }
+        for alternative in unit.alternative_pronunciations.iter().chain(
+            unit.english
+                .iter()
+                .flat_map(|definition| &definition.alternative_pronunciations),
+        ) {
+            if from_numbered(&alternative.value.pronunciation.numbers)?
+                != alternative.value.pronunciation
+            {
+                bail!("noncanonical alternative pinyin for {}", unit.id);
+            }
         }
         for lookup_key in pinyin_keys(unit) {
             if !pinyin
@@ -690,7 +813,11 @@ pub fn validate_bundle(directory: &Path) -> Result<()> {
                 .iter()
                 .flat_map(|definition| &definition.measure_words),
         ) {
-            if !identity.contains_key(&measure_word.value) {
+            if archive
+                .identities
+                .get(measure_word.value.digest())
+                .is_none()
+            {
                 bail!(
                     "unresolved classifier {} in {}",
                     measure_word.value,
@@ -699,18 +826,127 @@ pub fn validate_bundle(directory: &Path) -> Result<()> {
             }
         }
     }
-    for values in pinyin.values() {
-        if values.windows(2).any(|pair| pair[0] >= pair[1]) {
-            bail!("pinyin index values are not strictly sorted");
-        }
-        if values
-            .iter()
-            .any(|runtime_key| !runtime_keys.contains(runtime_key))
-        {
-            bail!("pinyin index contains a missing runtime key");
+    validate_index_contents(
+        &chinese_fst,
+        &archive.chinese_postings,
+        archive.chinese_runtime_keys.as_slice(),
+        &simplified,
+        &traditional,
+    )?;
+    validate_single_index_contents(
+        &pinyin_fst,
+        &archive.pinyin_postings,
+        archive.pinyin_runtime_keys.as_slice(),
+        &pinyin,
+    )?;
+    Ok(())
+}
+
+fn validate_archived_index<I>(
+    name: &str,
+    fst_terms: usize,
+    posting_records: usize,
+    flat: &[rkyv::Archived<u32>],
+    ranges: I,
+    record_count: usize,
+) -> Result<()>
+where
+    I: IntoIterator<Item = (u32, u32)>,
+{
+    if fst_terms != posting_records {
+        bail!("{name} FST and posting metadata have different term counts");
+    }
+    for (start, len) in ranges {
+        let start = usize::try_from(start)?;
+        let end = start
+            .checked_add(usize::try_from(len)?)
+            .context("posting range overflow")?;
+        let values = flat
+            .get(start..end)
+            .with_context(|| format!("{name} posting range is out of bounds"))?;
+        let mut previous = None;
+        for value in values {
+            let value = usize::try_from(value.to_native())?;
+            if value >= record_count {
+                bail!("{name} posting references a missing runtime key");
+            }
+            if previous.is_some_and(|previous| previous >= value) {
+                bail!("{name} posting values are not strictly sorted");
+            }
+            previous = Some(value);
         }
     }
-    Set::new(fs::read(directory.join("chinese.fst"))?).context("validate Chinese FST")?;
+    Ok(())
+}
+
+fn archived_postings(
+    flat: &[rkyv::Archived<u32>],
+    range: &ArchivedPostingRange,
+) -> Result<Vec<u32>> {
+    let start = usize::try_from(range.start.to_native())?;
+    let end = start
+        .checked_add(usize::try_from(range.len.to_native())?)
+        .context("posting range overflow")?;
+    Ok(flat
+        .get(start..end)
+        .context("posting range is out of bounds")?
+        .iter()
+        .map(|value| value.to_native())
+        .collect())
+}
+
+fn validate_index_contents(
+    fst: &Map<&[u8]>,
+    postings: &[ArchivedChinesePostings],
+    flat: &[rkyv::Archived<u32>],
+    simplified: &SearchIndex,
+    traditional: &SearchIndex,
+) -> Result<()> {
+    let terms = simplified
+        .keys()
+        .chain(traditional.keys())
+        .collect::<BTreeSet<_>>();
+    if fst.len() != terms.len() {
+        bail!("Chinese FST term set is inconsistent with lexical records");
+    }
+    for term in terms {
+        let ordinal = fst
+            .get(term)
+            .with_context(|| format!("Chinese FST omits {term:?}"))?;
+        let entry = postings
+            .get(usize::try_from(ordinal)?)
+            .context("Chinese FST has invalid posting ordinal")?;
+        if archived_postings(flat, &entry.simplified)?
+            != simplified.get(term).cloned().unwrap_or_default()
+            || archived_postings(flat, &entry.traditional)?
+                != traditional.get(term).cloned().unwrap_or_default()
+        {
+            bail!("Chinese postings are inconsistent for {term:?}");
+        }
+    }
+    Ok(())
+}
+
+fn validate_single_index_contents(
+    fst: &Map<&[u8]>,
+    postings: &[ArchivedPostingRange],
+    flat: &[rkyv::Archived<u32>],
+    expected: &SearchIndex,
+) -> Result<()> {
+    if fst.len() != expected.len() {
+        bail!("Pinyin FST term set is inconsistent with lexical records");
+    }
+    for (term, values) in expected {
+        let ordinal = fst
+            .get(term)
+            .with_context(|| format!("Pinyin FST omits {term:?}"))?;
+        let range = postings
+            .get(usize::try_from(ordinal)?)
+            .context("Pinyin FST has invalid posting ordinal")?;
+        if archived_postings(flat, range)? != *values {
+            bail!("Pinyin postings are inconsistent for {term:?}");
+        }
+    }
     Ok(())
 }
 
@@ -781,25 +1017,6 @@ fn require_sources<T>(value: &Sourced<T>, kind: &str) -> Result<()> {
         bail!("{kind} has no source attribution");
     }
     Ok(())
-}
-
-/// Reads one binary payload and enforces its schema envelope.
-fn read_binary<T: DeserializeOwned>(directory: &Path, name: &str) -> Result<T> {
-    let archive_name = format!("{name}.zst");
-    let path = directory.join(&archive_name);
-    let compressed = fs::read(&path).with_context(|| format!("read {}", path.display()))?;
-    let raw = zstd::stream::decode_all(compressed.as_slice())
-        .with_context(|| format!("decompress {}", path.display()))?;
-    let envelope: BinaryEnvelope<T> =
-        bincode::deserialize(&raw).with_context(|| format!("deserialize {}", path.display()))?;
-    if envelope.schema_version != SCHEMA_VERSION {
-        bail!(
-            "{} has unsupported schema {}",
-            name,
-            envelope.schema_version
-        );
-    }
-    Ok(envelope.payload)
 }
 
 /// Computes lowercase SHA-256 checksums for the named bundle files.
@@ -949,10 +1166,10 @@ mod tests {
         )
         .unwrap();
         validate_bundle(&first).unwrap();
-        for name in DICTIONARY_FILES {
+        for name in LEGACY_DICTIONARY_FILES {
             assert!(!first.join(name).exists());
-            assert!(first.join(format!("{name}.zst")).is_file());
         }
+        assert!(first.join("dictionary.rkyv.zst").is_file());
         for name in CHECKSUMMED_FILES
             .iter()
             .copied()
@@ -998,7 +1215,7 @@ mod tests {
     }
 
     #[test]
-    fn bundle_rejects_swapped_headword_artifacts_with_updated_checksums() {
+    fn bundle_rejects_corrupt_archive_with_updated_checksums() {
         let temporary = TempDir::new().unwrap();
         let output = temporary.path().join("bundle");
         let lock = fixture_lock(temporary.path());
@@ -1011,12 +1228,11 @@ mod tests {
         )
         .unwrap();
 
-        let simplified_path = output.join("simplified.dictionary.zst");
-        let traditional_path = output.join("traditional.dictionary.zst");
-        let simplified_bytes = fs::read(&simplified_path).unwrap();
-        let traditional_bytes = fs::read(&traditional_path).unwrap();
-        fs::write(&simplified_path, traditional_bytes).unwrap();
-        fs::write(&traditional_path, simplified_bytes).unwrap();
+        let archive_path = output.join("dictionary.rkyv.zst");
+        let mut archive_bytes = fs::read(&archive_path).unwrap();
+        let middle = archive_bytes.len() / 2;
+        archive_bytes[middle] ^= 0x80;
+        fs::write(&archive_path, archive_bytes).unwrap();
 
         let updated_checksums = checksums(&output, CHECKSUMMED_FILES).unwrap();
         let mut manifest: Manifest =
@@ -1028,12 +1244,7 @@ mod tests {
         report.file_checksums = updated_checksums;
         write_json(output.join("build-report.json"), &report).unwrap();
 
-        let error = validate_bundle(&output).unwrap_err();
-        assert!(
-            error
-                .to_string()
-                .contains("simplified headword index is inconsistent with data")
-        );
+        assert!(validate_bundle(&output).is_err());
     }
 
     #[test]
@@ -1126,8 +1337,6 @@ mod tests {
                 },
                 Source::CcCedict,
             ));
-        let lexical_id = lexical_unit.id.clone();
-
         write_bundle(
             &output,
             temporary.path(),
@@ -1137,27 +1346,6 @@ mod tests {
         )
         .unwrap();
 
-        let identity: IdentityIndex = read_binary(&output, "identity.dictionary").unwrap();
-        let pinyin: SearchIndex = read_binary(&output, "pinyin.dictionary").unwrap();
-        let runtime_key = identity[&lexical_id];
-        for pronunciation in [entity_alternative, definition_alternative] {
-            for lookup_key in [
-                pronunciation
-                    .marks
-                    .chars()
-                    .filter(|character| !character.is_whitespace())
-                    .collect::<String>()
-                    .to_lowercase(),
-                pronunciation.numbers.to_lowercase(),
-                pronunciation
-                    .numbers
-                    .chars()
-                    .filter(|character| !character.is_ascii_digit())
-                    .collect::<String>()
-                    .to_lowercase(),
-            ] {
-                assert_eq!(pinyin.get(&lookup_key), Some(&vec![runtime_key]));
-            }
-        }
+        validate_bundle(&output).unwrap();
     }
 }

@@ -1,6 +1,6 @@
 # Syng Dictionary Creator
 
-This crate builds Syng's Chinese–English dictionary bundle from pinned snapshots of CC-CEDICT, Chinese Notes, English Wiktionary, and Princeton WordNet. Version 5 adds the supporting index for English lexical search and is intentionally incompatible with earlier bundles.
+This crate builds Syng's Chinese–English dictionary bundle from pinned snapshots of CC-CEDICT, Chinese Notes, English Wiktionary, and Princeton WordNet. Version 4 publishes the lexical corpus as a validated zero-copy archive while retaining the specialized English search container.
 
 The pipeline is written in Rust, is offline by default, keeps source attribution on every published assertion, and produces byte-for-byte deterministic artifacts from the same verified inputs.
 
@@ -18,7 +18,7 @@ Build offline from that cache and atomically publish a validated bundle to `out/
 cargo run -- build
 ```
 
-Validate an existing bundle, including schema wrappers, checksums, identities, indexes, attribution, and classifier references:
+Validate an existing bundle, including archive structure, checksums, identities, indexes, attribution, and classifier references:
 
 ```console
 cargo run -- validate
@@ -45,8 +45,7 @@ cargo deny check licenses
 The central serialized model is:
 
 ```rust
-#[serde(transparent)]
-struct LexicalId(String);
+struct LexicalId([u8; 32]);
 
 struct Pinyin {
     marks: String,
@@ -121,12 +120,8 @@ Marked Pinyin is converted only when the reviewed syllable vocabulary yields one
 
 The published bundle contains:
 
-- `data.dictionary.zst`: deterministic runtime `u32` keys to `LexicalUnit`
-- `simplified.dictionary.zst` and `traditional.dictionary.zst`: normalized headword indexes
-- `pinyin.dictionary.zst`: primary and embedded-alternate pronunciation lookup forms
+- `dictionary.rkyv.zst`: dense lexical records, fixed-digest identity lookup, and native Chinese/Pinyin FST maps with flat postings
 - `english.search.zst`: the complete versioned English lexical-search container, compressed as one deterministic Zstandard frame
-- `identity.dictionary.zst`: persistent `LexicalId` to runtime key
-- `chinese.fst`: deduplicated simplified/traditional tokenizer terms
 - `manifest.json`: source pins, licenses, attribution, counts, schema, and checksums
 - `build-report.json`: admitted, suppressed, rejected, and source-specific diagnostic counts
 - `LICENSE-DATA.txt`: license grant for the combined dictionary bundle
@@ -134,23 +129,14 @@ The published bundle contains:
 - `NOTICE.md`: source copyrights, attribution, license evidence, and modification notices
 - `wiktionary-attribution.json`: lexical identities to English Wiktionary entry pages and contributor histories
 
-Every `.dictionary.zst` file contains a schema-versioned bincode envelope compressed as a deterministic Zstandard level-19 frame with content size and checksum enabled. Ordered maps and sorted lists make runtime-key assignment and serialization deterministic. `chinese_dictionary` 4.0 decompresses the dictionary archives to their corresponding `.dictionary` names and `english.search.zst` to `OUT_DIR/english.search` in its build script before compiling the consumer.
+`dictionary.rkyv.zst` uses rkyv 0.8.18 with little-endian, aligned, 32-bit-pointer formatting and deterministic Zstandard level-20 compression. Lexical units are assigned dense runtime keys in stable identity order. Identity entries are supplied to rkyv's portable archived hash map in digest order at a fixed load factor; FST terms and postings are sorted and postings are deduplicated. The consumer validates and embeds the decompressed aligned bytes without constructing an owned corpus.
 
 The compressed English index has a 22 MiB publication ceiling. A larger build prints its section sizes and fails before the atomic bundle swap.
 
-With the pinned 2026-09-15 corpus, the complete version-1 English design encodes to 56,226,298 bytes raw and 22,056,532 bytes compressed (SHA-256 `08ad9f60dd3703446f090682aab557f848262c57277d1aab12f28ec0120eea9e`), within that ceiling.
-
-The same build compresses the five schema-enveloped dictionary files from 146,687,816 bytes to 34,150,044 bytes, a 76.7% reduction. The complete validated bundle is 73,270,590 bytes, down from 182,699,416 bytes for the preceding uncompressed schema-4 bundle despite the larger English search index.
-
-`chinese_dictionary` 4.0 and later consume schema 5. Older releases cannot read
-this bundle.
-
-The canonical schema-5 lexical types and English format implementation are
-private modules in this generator. `chinese_dictionary` keeps consumer-local
-definitions of the same versioned wire contracts, so its crates.io package has
-no unpublished path dependencies. Schema, normalization, grammar, morphology,
-or container changes require a version bump and coordinated consumer fixture
-validation.
+The canonical schema-4 archive and English format implementations remain local
+to this generator. `chinese_dictionary` keeps synchronized consumer-local
+definitions and shared fixtures, so its crates.io package has no unpublished
+path dependencies. Contract changes require coordinated fixture validation.
 
 ## Source and license notices
 

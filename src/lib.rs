@@ -4,6 +4,7 @@
 
 mod bundle;
 mod combine;
+mod dictionary_archive;
 mod english;
 mod english_search_format;
 mod lock;

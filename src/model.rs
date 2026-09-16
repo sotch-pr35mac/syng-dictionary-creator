@@ -1,19 +1,29 @@
 //! Canonical serialized model and stable lexical identity primitives.
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use sha2::{Digest, Sha256};
-use std::fmt;
+use std::{fmt, str::FromStr};
 use unicode_normalization::UnicodeNormalization;
 
 /// Incompatible schema version wrapped around every binary artifact.
-pub const SCHEMA_VERSION: u32 = 5;
+pub const SCHEMA_VERSION: u32 = 4;
 /// Version prefix used by persistent lexical identifiers.
 pub const IDENTITY_VERSION: u8 = 1;
 
 /// Persistent identity derived from normalized headwords and canonical Pinyin.
-#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
-#[serde(transparent)]
-pub struct LexicalId(String);
+#[derive(
+    Clone,
+    Debug,
+    Eq,
+    Hash,
+    Ord,
+    PartialEq,
+    PartialOrd,
+    rkyv::Archive,
+    rkyv::Serialize,
+    rkyv::Deserialize,
+)]
+pub struct LexicalId([u8; 32]);
 
 impl LexicalId {
     /// Computes an identity from simplified, traditional, and numbered-Pinyin fields.
@@ -31,16 +41,14 @@ impl LexicalId {
 
     /// Hashes an already canonical identity preimage and adds the version prefix.
     pub fn from_preimage(bytes: &[u8]) -> Self {
-        let digest = Sha256::digest(bytes);
-        Self(format!("{IDENTITY_VERSION}:{digest:x}"))
+        Self(Sha256::digest(bytes).into())
     }
 
     /// Validates and wraps a serialized lexical identifier.
-    pub fn parse(value: impl Into<String>) -> Result<Self, ModelError> {
-        let value = value.into();
-        let expected_prefix = format!("{IDENTITY_VERSION}:");
+    pub fn parse(value: impl AsRef<str>) -> Result<Self, ModelError> {
+        let value = value.as_ref();
         let digest = value
-            .strip_prefix(&expected_prefix)
+            .strip_prefix("1:")
             .ok_or(ModelError::InvalidLexicalId)?;
         if digest.len() != 64
             || !digest
@@ -49,11 +57,21 @@ impl LexicalId {
         {
             return Err(ModelError::InvalidLexicalId);
         }
-        Ok(Self(value))
+        let mut bytes = [0_u8; 32];
+        for (index, pair) in digest.as_bytes().chunks_exact(2).enumerate() {
+            bytes[index] = (hex_nibble(pair[0]).ok_or(ModelError::InvalidLexicalId)? << 4)
+                | hex_nibble(pair[1]).ok_or(ModelError::InvalidLexicalId)?;
+        }
+        Ok(Self(bytes))
     }
 
-    /// Returns the version-prefixed identifier string.
-    pub fn as_str(&self) -> &str {
+    /// Returns the identity format version.
+    pub const fn version(&self) -> u8 {
+        IDENTITY_VERSION
+    }
+
+    /// Returns the fixed SHA-256 digest used for constant-time archive lookup.
+    pub const fn digest(&self) -> &[u8; 32] {
         &self.0
     }
 
@@ -65,6 +83,8 @@ impl LexicalId {
     ) -> Result<Vec<u8>, ModelError> {
         let simplified = normalize_headword(simplified)?;
         let traditional = normalize_headword(traditional)?;
+        let numbered_pinyin = crate::pinyin::canonicalize_numbered(numbered_pinyin)
+            .map_err(|_| ModelError::InvalidPinyin)?;
         let mut bytes =
             Vec::with_capacity(simplified.len() + traditional.len() + numbered_pinyin.len() + 2);
         bytes.extend_from_slice(simplified.as_bytes());
@@ -78,7 +98,46 @@ impl LexicalId {
 
 impl fmt::Display for LexicalId {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str(&self.0)
+        formatter.write_str("1:")?;
+        for byte in self.0 {
+            write!(formatter, "{byte:02x}")?;
+        }
+        Ok(())
+    }
+}
+
+impl FromStr for LexicalId {
+    type Err = ModelError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        Self::parse(value)
+    }
+}
+
+impl Serialize for LexicalId {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.collect_str(self)
+    }
+}
+
+impl<'de> Deserialize<'de> for LexicalId {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let value = String::deserialize(deserializer)?;
+        Self::parse(&value).map_err(serde::de::Error::custom)
+    }
+}
+
+const fn hex_nibble(byte: u8) -> Option<u8> {
+    match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'a'..=b'f' => Some(byte - b'a' + 10),
+        _ => None,
     }
 }
 
@@ -109,6 +168,8 @@ pub enum ModelError {
     InvalidHeadword,
     /// A serialized lexical identifier has the wrong version or digest form.
     InvalidLexicalId,
+    /// Numbered Pinyin cannot be canonicalized for identity construction.
+    InvalidPinyin,
 }
 
 impl fmt::Display for ModelError {
@@ -120,7 +181,20 @@ impl fmt::Display for ModelError {
 impl std::error::Error for ModelError {}
 
 /// Canonical Pinyin representations stored together for display and lookup.
-#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
+#[derive(
+    Clone,
+    Debug,
+    Eq,
+    Hash,
+    Ord,
+    PartialEq,
+    PartialOrd,
+    Serialize,
+    Deserialize,
+    rkyv::Archive,
+    rkyv::Serialize,
+    rkyv::Deserialize,
+)]
 pub struct Pinyin {
     /// Tone-marked, space-separated display form.
     pub marks: String,
@@ -131,7 +205,21 @@ pub struct Pinyin {
 }
 
 /// Upstream dictionary that supports a published value.
-#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    Eq,
+    Hash,
+    Ord,
+    PartialEq,
+    PartialOrd,
+    Serialize,
+    Deserialize,
+    rkyv::Archive,
+    rkyv::Serialize,
+    rkyv::Deserialize,
+)]
 #[serde(rename_all = "kebab-case")]
 pub enum Source {
     /// CC-CEDICT.
@@ -143,7 +231,17 @@ pub enum Source {
 }
 
 /// A value paired with one or more ordered source attributions.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(
+    Clone,
+    Debug,
+    Eq,
+    PartialEq,
+    Serialize,
+    Deserialize,
+    rkyv::Archive,
+    rkyv::Serialize,
+    rkyv::Deserialize,
+)]
 pub struct Sourced<T> {
     /// Published value.
     pub value: T,
@@ -162,7 +260,20 @@ impl<T> Sourced<T> {
 }
 
 /// A pronunciation variant that does not exist as its own lexical entity.
-#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
+#[derive(
+    Clone,
+    Debug,
+    Eq,
+    Hash,
+    Ord,
+    PartialEq,
+    PartialOrd,
+    Serialize,
+    Deserialize,
+    rkyv::Archive,
+    rkyv::Serialize,
+    rkyv::Deserialize,
+)]
 pub struct AlternativePronunciation {
     /// Canonical alternate Pinyin.
     pub pronunciation: Pinyin,
@@ -171,7 +282,20 @@ pub struct AlternativePronunciation {
 }
 
 /// Structured bilingual usage example.
-#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
+#[derive(
+    Clone,
+    Debug,
+    Eq,
+    Hash,
+    Ord,
+    PartialEq,
+    PartialOrd,
+    Serialize,
+    Deserialize,
+    rkyv::Archive,
+    rkyv::Serialize,
+    rkyv::Deserialize,
+)]
 pub struct Example {
     /// Chinese example text.
     pub chinese: String,
@@ -180,7 +304,21 @@ pub struct Example {
 }
 
 /// Reviewed semantic category for a structured qualifier.
-#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    Eq,
+    Hash,
+    Ord,
+    PartialEq,
+    PartialOrd,
+    Serialize,
+    Deserialize,
+    rkyv::Archive,
+    rkyv::Serialize,
+    rkyv::Deserialize,
+)]
 #[serde(rename_all = "kebab-case")]
 pub enum QualifierCategory {
     /// Subject area or professional domain.
@@ -200,7 +338,20 @@ pub enum QualifierCategory {
 }
 
 /// Reviewed structured qualifier attached to a definition.
-#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
+#[derive(
+    Clone,
+    Debug,
+    Eq,
+    Hash,
+    Ord,
+    PartialEq,
+    PartialOrd,
+    Serialize,
+    Deserialize,
+    rkyv::Archive,
+    rkyv::Serialize,
+    rkyv::Deserialize,
+)]
 pub struct Qualifier {
     /// Semantic category of the qualifier.
     pub category: QualifierCategory,
@@ -209,7 +360,21 @@ pub struct Qualifier {
 }
 
 /// Reviewed kinds of lexical entity that are not ordinary parts of speech.
-#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    Eq,
+    Hash,
+    Ord,
+    PartialEq,
+    PartialOrd,
+    Serialize,
+    Deserialize,
+    rkyv::Archive,
+    rkyv::Serialize,
+    rkyv::Deserialize,
+)]
 #[serde(rename_all = "kebab-case")]
 pub enum LexicalKind {
     /// Source boilerplate entry.
@@ -245,7 +410,21 @@ pub enum LexicalKind {
 }
 
 /// Reviewed grammatical parts of speech.
-#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    Eq,
+    Hash,
+    Ord,
+    PartialEq,
+    PartialOrd,
+    Serialize,
+    Deserialize,
+    rkyv::Archive,
+    rkyv::Serialize,
+    rkyv::Deserialize,
+)]
 #[serde(rename_all = "kebab-case")]
 pub enum PartOfSpeech {
     /// Adjective.
@@ -289,7 +468,17 @@ pub enum PartOfSpeech {
 }
 
 /// One ordered English definition and its independently attributed metadata.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(
+    Clone,
+    Debug,
+    Eq,
+    PartialEq,
+    Serialize,
+    Deserialize,
+    rkyv::Archive,
+    rkyv::Serialize,
+    rkyv::Deserialize,
+)]
 pub struct Definition {
     /// Leaf English gloss.
     pub gloss: Sourced<String>,
@@ -329,7 +518,18 @@ impl Definition {
 }
 
 /// Closed proficiency level shared by the supported HSK systems.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    Eq,
+    PartialEq,
+    Serialize,
+    Deserialize,
+    rkyv::Archive,
+    rkyv::Serialize,
+    rkyv::Deserialize,
+)]
 pub enum HskLevel {
     /// Level one.
     One,
@@ -348,7 +548,18 @@ pub enum HskLevel {
 }
 
 /// HSK memberships across historical and current standards.
-#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(
+    Clone,
+    Debug,
+    Default,
+    Eq,
+    PartialEq,
+    Serialize,
+    Deserialize,
+    rkyv::Archive,
+    rkyv::Serialize,
+    rkyv::Deserialize,
+)]
 pub struct HskLevels {
     /// Memberships in the 2015 HSK vocabulary.
     pub hsk_2015: Vec<HskLevel>,
@@ -359,7 +570,17 @@ pub struct HskLevels {
 }
 
 /// Canonical published dictionary entity for one exact identity tuple.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(
+    Clone,
+    Debug,
+    Eq,
+    PartialEq,
+    Serialize,
+    Deserialize,
+    rkyv::Archive,
+    rkyv::Serialize,
+    rkyv::Deserialize,
+)]
 pub struct LexicalUnit {
     /// Persistent content-derived identity.
     pub id: LexicalId,
@@ -379,15 +600,6 @@ pub struct LexicalUnit {
     pub english: Vec<Definition>,
 }
 
-/// Schema-version wrapper around every bincode payload.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-pub struct BinaryEnvelope<T> {
-    /// Bundle schema required to decode the payload.
-    pub schema_version: u32,
-    /// Ordered serialized artifact payload.
-    pub payload: T,
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -397,8 +609,14 @@ mod tests {
         let bytes = LexicalId::prehash_bytes(" 烟火 ", "煙火", "yan1huo3").unwrap();
         assert_eq!(bytes, "烟火\0煙火\0yan1huo3".as_bytes());
         assert_eq!(
-            LexicalId::new("烟火", "煙火", "yan1huo3").unwrap().as_str(),
+            LexicalId::new("烟火", "煙火", "yan1huo3")
+                .unwrap()
+                .to_string(),
             "1:1f3478580959306ec1a7c9339a95346106204a327f7d0d7ea4764cdf49cdc2d9"
+        );
+        assert_eq!(
+            LexicalId::new("烟火", "煙火", "yan1-huo3").unwrap(),
+            LexicalId::new("烟火", "煙火", "yan1huo3").unwrap()
         );
     }
 

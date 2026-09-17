@@ -450,6 +450,14 @@ fn parse_examples(examples: Vec<WikiExample>, report: &mut SourceReport) -> Vec<
         ));
     }
     paired.sort_by_key(|(order, _)| *order);
+    let mut seen = BTreeSet::new();
+    paired.retain(|(_, example)| {
+        let unique = seen.insert(example.clone());
+        if !unique {
+            report.diagnose("deduplicated-normalized-example");
+        }
+        unique
+    });
     paired
         .into_iter()
         .map(|(_, example)| Sourced::one(example, Source::Wiktionary))
@@ -812,6 +820,20 @@ mod tests {
         assert_eq!(examples[1].value.simplified.as_deref(), Some("圆满结束。"));
         assert_eq!(examples[1].value.traditional.as_deref(), Some("圓滿結束。"));
         assert_eq!(examples[1].value.english, None);
+    }
+
+    #[test]
+    fn deduplicates_examples_that_converge_after_script_completion() {
+        let json = entry_json(
+            r#"[{"glosses":["complete"],"examples":[{"type":"example","text":"123","english":"number"},{"type":"example","text":"123","english":"number","tags":["Simplified-Chinese"]}]}]"#,
+            r#"[{"zh_pron":"yuánmǎn","tags":["Mandarin","Pinyin"]}]"#,
+        );
+        let wrapper: Wrapper = serde_json::from_str(&json).unwrap();
+        let mut report = SourceReport::default();
+        let record = parse_entry(wrapper.raw, 7, &mut report).unwrap();
+
+        assert_eq!(record.definitions[0].examples.len(), 1);
+        assert_eq!(report.diagnostics["deduplicated-normalized-example"], 1);
     }
 
     #[test]

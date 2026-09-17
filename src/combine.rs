@@ -1,6 +1,9 @@
 //! Deterministic source-ordered admission and cross-source combination.
 
-use crate::model::{Definition, HskLevel, HskLevels, LexicalId, LexicalUnit, Source, Sourced};
+use crate::model::{
+    AlternativePronunciation, Definition, HskLevel, HskLevels, LexicalId, LexicalUnit, Source,
+    Sourced,
+};
 use crate::sources::{BuildReport, ParsedRecord};
 use anyhow::{Result, bail};
 use hsk::{HskQuery, HskSystem, levels_all};
@@ -199,10 +202,10 @@ fn admit_wiktionary(
         if parsed.pronunciation.numbers == builder.unit.pinyin.numbers {
             continue;
         }
-        merge_values(
+        merge_alternative_pronunciations(
             &mut record.alternative_pronunciations,
             vec![Sourced::one(
-                crate::model::AlternativePronunciation {
+                AlternativePronunciation {
                     pronunciation: parsed.pronunciation.clone(),
                     label: parsed
                         .label
@@ -313,7 +316,8 @@ fn merge_record(builder: &mut UnitBuilder, record: ParsedRecord, report: &mut Bu
     let source_report = report.sources.entry(record.source).or_default();
     let _diagnostic_locator = &record.locator;
     let mut published_anything = false;
-    for definition in record.definitions {
+    for mut definition in record.definitions {
+        deduplicate_definition_metadata(&mut definition);
         let matching_index = builder.unit.english.iter().position(|existing| {
             existing.gloss.value == definition.gloss.value
                 && existing
@@ -331,7 +335,7 @@ fn merge_record(builder: &mut UnitBuilder, record: ParsedRecord, report: &mut Bu
         source_report.emitted_definitions += 1;
         published_anything = true;
     }
-    merge_values(
+    merge_alternative_pronunciations(
         &mut builder.unit.alternative_pronunciations,
         record.alternative_pronunciations,
     );
@@ -373,8 +377,10 @@ fn record_headwords_match(record: &ParsedRecord, unit: &LexicalUnit) -> bool {
 }
 
 /// Aggregates independently sourced metadata for an exact definition match.
-fn merge_definition(existing: &mut Definition, incoming: Definition) {
+fn merge_definition(existing: &mut Definition, mut incoming: Definition) {
     debug_assert_eq!(existing.gloss.value, incoming.gloss.value);
+    deduplicate_definition_metadata(existing);
+    deduplicate_definition_metadata(&mut incoming);
     merge_sources(&mut existing.gloss.sources, incoming.gloss.sources);
     merge_values(&mut existing.context, incoming.context);
     merge_values(&mut existing.examples, incoming.examples);
@@ -382,11 +388,75 @@ fn merge_definition(existing: &mut Definition, incoming: Definition) {
     merge_values(&mut existing.qualifiers, incoming.qualifiers);
     merge_values(&mut existing.lexical_kinds, incoming.lexical_kinds);
     merge_values(&mut existing.parts_of_speech, incoming.parts_of_speech);
-    merge_values(
+    merge_alternative_pronunciations(
         &mut existing.alternative_pronunciations,
         incoming.alternative_pronunciations,
     );
     merge_values(&mut existing.measure_words, incoming.measure_words);
+}
+
+/// Collapses metadata that becomes identical after source-specific normalization.
+fn deduplicate_definition_metadata(definition: &mut Definition) {
+    deduplicate_values(&mut definition.context);
+    deduplicate_values(&mut definition.examples);
+    deduplicate_values(&mut definition.commentary);
+    deduplicate_values(&mut definition.qualifiers);
+    deduplicate_values(&mut definition.lexical_kinds);
+    deduplicate_values(&mut definition.parts_of_speech);
+    deduplicate_alternative_pronunciations(&mut definition.alternative_pronunciations);
+    deduplicate_values(&mut definition.measure_words);
+}
+
+/// Deduplicates one already-collected attributed value list without changing first-seen order.
+fn deduplicate_values<T: Eq>(values: &mut Vec<Sourced<T>>) {
+    let incoming = std::mem::take(values);
+    merge_values(values, incoming);
+}
+
+/// Deduplicates pronunciation values by canonical Pinyin rather than by display label.
+fn deduplicate_alternative_pronunciations(values: &mut Vec<Sourced<AlternativePronunciation>>) {
+    let incoming = std::mem::take(values);
+    merge_alternative_pronunciations(values, incoming);
+}
+
+/// Merges labels and attribution for records naming the same canonical pronunciation.
+fn merge_alternative_pronunciations(
+    existing: &mut Vec<Sourced<AlternativePronunciation>>,
+    incoming: Vec<Sourced<AlternativePronunciation>>,
+) -> bool {
+    let mut changed = false;
+    for incoming_value in incoming {
+        if let Some(existing_value) = existing.iter_mut().find(|existing_value| {
+            existing_value.value.pronunciation == incoming_value.value.pronunciation
+        }) {
+            changed |= merge_pronunciation_labels(
+                &mut existing_value.value.label,
+                &incoming_value.value.label,
+            );
+            changed |= merge_sources(&mut existing_value.sources, incoming_value.sources);
+        } else {
+            existing.push(incoming_value);
+            changed = true;
+        }
+    }
+    changed
+}
+
+/// Unions slash-separated pronunciation scope labels in deterministic lexical order.
+fn merge_pronunciation_labels(existing: &mut String, incoming: &str) -> bool {
+    let labels = existing
+        .split('/')
+        .chain(incoming.split('/'))
+        .map(str::trim)
+        .filter(|label| !label.is_empty())
+        .collect::<BTreeSet<_>>();
+    let merged = labels.into_iter().collect::<Vec<_>>().join("/");
+    if *existing == merged {
+        false
+    } else {
+        *existing = merged;
+        true
+    }
 }
 
 /// Deduplicates equal metadata values while aggregating their source lists.
@@ -462,7 +532,7 @@ const fn source_rank(source: Source) -> u8 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{AlternativePronunciation, PartOfSpeech, Source};
+    use crate::model::{AlternativePronunciation, Example, PartOfSpeech, Source};
     use crate::pinyin::from_numbered;
     use crate::sources::ParsedPronunciation;
 
@@ -593,5 +663,60 @@ mod tests {
         assert!(units.iter().any(|unit| {
             unit.pinyin.numbers == "ta4shi2" && unit.english[0].gloss.value == "to walk steadily"
         }));
+    }
+
+    #[test]
+    fn normalized_examples_are_deduplicated_before_publication() {
+        let mut wiktionary = record(Source::Wiktionary, "yuan2 man3", "satisfactory");
+        wiktionary.simplified = Some("圆满".to_owned());
+        wiktionary.traditional = Some("圓滿".to_owned());
+        wiktionary.explicit_headwords = vec!["圆满".to_owned(), "圓滿".to_owned()];
+        let example = Example {
+            simplified: Some("结局非常圆满。".to_owned()),
+            traditional: Some("結局非常圓滿。".to_owned()),
+            english: Some("The ending is very satisfactory.".to_owned()),
+        };
+        wiktionary.definitions[0].examples = vec![
+            Sourced::one(example.clone(), Source::Wiktionary),
+            Sourced::one(example, Source::Wiktionary),
+        ];
+
+        let units = combine(vec![wiktionary], &mut BuildReport::default()).unwrap();
+
+        assert_eq!(units[0].english[0].examples.len(), 1);
+        assert_eq!(
+            units[0].english[0].examples[0].sources,
+            vec![Source::Wiktionary]
+        );
+    }
+
+    #[test]
+    fn alternative_pronunciation_identity_ignores_scope_label() {
+        let pronunciation = from_numbered("cong1 rong2").unwrap();
+        let mut alternatives = vec![Sourced::one(
+            AlternativePronunciation {
+                pronunciation: pronunciation.clone(),
+                label: "Taiwan pr.".to_owned(),
+            },
+            Source::CcCedict,
+        )];
+
+        merge_alternative_pronunciations(
+            &mut alternatives,
+            vec![Sourced::one(
+                AlternativePronunciation {
+                    pronunciation,
+                    label: "Mainland China pr./Taiwan pr.".to_owned(),
+                },
+                Source::Wiktionary,
+            )],
+        );
+
+        assert_eq!(alternatives.len(), 1);
+        assert_eq!(alternatives[0].value.label, "Mainland China pr./Taiwan pr.");
+        assert_eq!(
+            alternatives[0].sources,
+            vec![Source::CcCedict, Source::Wiktionary]
+        );
     }
 }

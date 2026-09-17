@@ -983,8 +983,12 @@ fn validate_sources(unit: &LexicalUnit) -> Result<()> {
         for value in &definition.context {
             require_sources(value, "definition context")?;
         }
+        let mut examples = BTreeSet::new();
         for value in &definition.examples {
             require_sources(value, "example")?;
+            if !examples.insert(&value.value) {
+                bail!("definition contains a duplicate normalized example");
+            }
             if value.value.simplified.is_none() || value.value.traditional.is_none() {
                 bail!("example is missing a simplified or traditional display form");
             }
@@ -1020,6 +1024,7 @@ fn validate_sources(unit: &LexicalUnit) -> Result<()> {
         for value in &definition.alternative_pronunciations {
             require_sources(value, "alternative pronunciation")?;
         }
+        validate_unique_alternative_pronunciations(&definition.alternative_pronunciations)?;
         for value in &definition.measure_words {
             require_sources(value, "classifier")?;
         }
@@ -1027,8 +1032,22 @@ fn validate_sources(unit: &LexicalUnit) -> Result<()> {
     for value in &unit.alternative_pronunciations {
         require_sources(value, "alternative pronunciation")?;
     }
+    validate_unique_alternative_pronunciations(&unit.alternative_pronunciations)?;
     for value in &unit.measure_words {
         require_sources(value, "classifier")?;
+    }
+    Ok(())
+}
+
+/// Rejects multiple metadata records naming the same canonical pronunciation.
+fn validate_unique_alternative_pronunciations(
+    values: &[Sourced<crate::model::AlternativePronunciation>],
+) -> Result<()> {
+    let mut pronunciations = BTreeSet::new();
+    for value in values {
+        if !pronunciations.insert(&value.value.pronunciation.numbers) {
+            bail!("duplicate canonical alternative pronunciation");
+        }
     }
     Ok(())
 }

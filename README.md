@@ -38,10 +38,6 @@ cargo deny check licenses
 
 `deny.toml` contains the reviewed GPL-compatible license allowlist. Run this check whenever `Cargo.lock` changes.
 
-## English search design
-
-[English search architecture](docs/english-search-architecture.md) specifies the finalized generator-side normalization, extraction, morphology, and binary format, plus the implemented consumer responsibilities. This repository generates the supporting data but does not implement production query planning or ranking.
-
 ## Canonical schema
 
 The central serialized model is:
@@ -73,7 +69,6 @@ struct Example {
 
 struct Definition {
     gloss: Sourced<String>,
-    context: Vec<Sourced<String>>,
     examples: Vec<Sourced<Example>>,
     commentary: Vec<Sourced<String>>,
     qualifiers: Vec<Sourced<Qualifier>>,

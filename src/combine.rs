@@ -318,14 +318,11 @@ fn merge_record(builder: &mut UnitBuilder, record: ParsedRecord, report: &mut Bu
     let mut published_anything = false;
     for mut definition in record.definitions {
         deduplicate_definition_metadata(&mut definition);
-        let matching_index = builder.unit.english.iter().position(|existing| {
-            existing.gloss.value == definition.gloss.value
-                && existing
-                    .context
-                    .iter()
-                    .map(|value| &value.value)
-                    .eq(definition.context.iter().map(|value| &value.value))
-        });
+        let matching_index = builder
+            .unit
+            .english
+            .iter()
+            .position(|existing| existing.gloss.value == definition.gloss.value);
         if let Some(index) = matching_index {
             merge_definition(&mut builder.unit.english[index], definition);
             published_anything = true;
@@ -382,7 +379,6 @@ fn merge_definition(existing: &mut Definition, mut incoming: Definition) {
     deduplicate_definition_metadata(existing);
     deduplicate_definition_metadata(&mut incoming);
     merge_sources(&mut existing.gloss.sources, incoming.gloss.sources);
-    merge_values(&mut existing.context, incoming.context);
     merge_values(&mut existing.examples, incoming.examples);
     merge_values(&mut existing.commentary, incoming.commentary);
     merge_values(&mut existing.qualifiers, incoming.qualifiers);
@@ -397,7 +393,6 @@ fn merge_definition(existing: &mut Definition, mut incoming: Definition) {
 
 /// Collapses metadata that becomes identical after source-specific normalization.
 fn deduplicate_definition_metadata(definition: &mut Definition) {
-    deduplicate_values(&mut definition.context);
     deduplicate_values(&mut definition.examples);
     deduplicate_values(&mut definition.commentary);
     deduplicate_values(&mut definition.qualifiers);

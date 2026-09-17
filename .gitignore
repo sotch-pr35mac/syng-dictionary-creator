@@ -4,3 +4,5 @@
 **/*.rs.bk
 cc-cedict.json
 /out/
+docs/english-search-architecture.md
+docs/source-decisions.md

@@ -28,19 +28,6 @@ const CHECKSUMMED_FILES: &[&str] = &[
     "NOTICE.md",
     "wiktionary-attribution.json",
 ];
-const LEGACY_DICTIONARY_FILES: &[&str] = &[
-    "data.dictionary",
-    "data.dictionary.zst",
-    "simplified.dictionary",
-    "simplified.dictionary.zst",
-    "traditional.dictionary",
-    "traditional.dictionary.zst",
-    "pinyin.dictionary",
-    "pinyin.dictionary.zst",
-    "identity.dictionary",
-    "identity.dictionary.zst",
-    "chinese.fst",
-];
 const ZSTD_LEVEL: i32 = 20;
 const BUNDLE_LICENSE: &str = "CC-BY-SA-4.0";
 const BUNDLE_LICENSE_URL: &str = "https://creativecommons.org/licenses/by-sa/4.0/";
@@ -372,10 +359,6 @@ fn has_source(unit: &LexicalUnit, source: crate::model::Source) -> bool {
         || unit.english.iter().any(|definition| {
             definition.gloss.sources.contains(&source)
                 || definition
-                    .context
-                    .iter()
-                    .any(|value| value.sources.contains(&source))
-                || definition
                     .examples
                     .iter()
                     .any(|value| value.sources.contains(&source))
@@ -579,11 +562,6 @@ pub fn validate_bundle(directory: &Path) -> Result<()> {
     }
     if manifest.archive_contract.as_bytes() != ARCHIVE_CONTRACT {
         bail!("unsupported archive contract {}", manifest.archive_contract);
-    }
-    for name in LEGACY_DICTIONARY_FILES {
-        if directory.join(name).exists() {
-            bail!("legacy uncompressed artifact {name} must not be published");
-        }
     }
     if manifest.bundle_license != BUNDLE_LICENSE
         || manifest.bundle_license_url != BUNDLE_LICENSE_URL
@@ -980,9 +958,6 @@ fn validate_manifest_licensing(manifest: &Manifest) -> Result<()> {
 fn validate_sources(unit: &LexicalUnit) -> Result<()> {
     for definition in &unit.english {
         require_sources(&definition.gloss, "definition gloss")?;
-        for value in &definition.context {
-            require_sources(value, "definition context")?;
-        }
         let mut examples = BTreeSet::new();
         for value in &definition.examples {
             require_sources(value, "example")?;
@@ -1208,9 +1183,6 @@ mod tests {
         )
         .unwrap();
         validate_bundle(&first).unwrap();
-        for name in LEGACY_DICTIONARY_FILES {
-            assert!(!first.join(name).exists());
-        }
         assert!(first.join("dictionary.rkyv.zst").is_file());
         for name in CHECKSUMMED_FILES
             .iter()

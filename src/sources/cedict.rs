@@ -87,35 +87,36 @@ pub(crate) fn parse_line(line: &str, line_number: u64) -> Result<ParsedRecord> {
             continue;
         }
 
-        if !all_classifier_markers_matched(raw_definition) {
-            bail!("malformed-classifier-annotation at line {line_number}");
-        }
+        for raw_gloss in raw_definition.split(';') {
+            let alternatives = parse_alternatives(raw_gloss)?;
+            if !all_alternative_markers_matched(raw_gloss) {
+                bail!("malformed-pronunciation-annotation at line {line_number}");
+            }
+            if !all_classifier_markers_matched(raw_gloss) {
+                bail!("malformed-classifier-annotation at line {line_number}");
+            }
 
-        let mut gloss = CLASSIFIER.replace_all(raw_definition, "").to_string();
-        gloss = ALTERNATIVE.replace_all(&gloss, "").to_string();
-        let (gloss, qualifiers, lexical_kinds) = extract_labels(&gloss);
-        let glosses = gloss
-            .split(';')
-            .map(normalize_text)
-            .filter(|gloss| !gloss.is_empty())
-            .collect::<Vec<_>>();
-        if glosses.is_empty() && !alternatives.is_empty() {
-            alternative_pronunciations.extend(alternatives);
-            continue;
-        }
-        if glosses.is_empty() {
-            bail!("empty-definition-after-annotations at line {line_number}");
-        }
-        let mut scoped_measure_words = Vec::new();
-        for capture in CLASSIFIER.captures_iter(raw_definition) {
-            scoped_measure_words.extend(parse_classifiers(&capture[1], Source::CcCedict)?);
-        }
-        for gloss in glosses {
+            let mut gloss = CLASSIFIER.replace_all(raw_gloss, "").to_string();
+            gloss = ALTERNATIVE.replace_all(&gloss, "").to_string();
+            let (gloss, qualifiers, lexical_kinds) = extract_labels(&gloss);
+            let gloss = normalize_text(&gloss);
+            if gloss.is_empty() && !alternatives.is_empty() {
+                alternative_pronunciations.extend(alternatives);
+                continue;
+            }
+            if gloss.is_empty() {
+                bail!("empty-definition-after-annotations at line {line_number}");
+            }
+
+            let mut scoped_measure_words = Vec::new();
+            for capture in CLASSIFIER.captures_iter(raw_gloss) {
+                scoped_measure_words.extend(parse_classifiers(&capture[1], Source::CcCedict)?);
+            }
             let mut definition = Definition::new(gloss, Source::CcCedict);
-            definition.qualifiers = qualifiers.clone();
-            definition.lexical_kinds = lexical_kinds.clone();
-            definition.alternative_pronunciations = alternatives.clone();
-            definition.measure_words = scoped_measure_words.clone();
+            definition.qualifiers = qualifiers;
+            definition.lexical_kinds = lexical_kinds;
+            definition.alternative_pronunciations = alternatives;
+            definition.measure_words = scoped_measure_words;
             definitions.push(definition);
         }
     }
@@ -296,6 +297,29 @@ mod tests {
         assert_eq!(record.definitions.len(), 2);
         assert_eq!(record.definitions[0].gloss.value, "and");
         assert_eq!(record.definitions[1].gloss.value, "together with");
+    }
+
+    #[test]
+    fn scopes_inline_annotations_to_their_semicolon_gloss() {
+        let record = parse_line(
+            "保存 保存 [[bao3cun2]] /to conserve; to preserve; to keep; to store; (computing) to save (a file etc)/",
+            1,
+        )
+        .unwrap();
+        assert_eq!(record.definitions.len(), 5);
+        assert!(
+            record
+                .definitions
+                .iter()
+                .take(4)
+                .all(|definition| definition.qualifiers.is_empty())
+        );
+        assert_eq!(record.definitions[4].qualifiers.len(), 1);
+        assert_eq!(record.definitions[4].qualifiers[0].value.value, "computing");
+
+        let record = parse_line("光 光 [guang1] /light (CL:道[dao4]); ray/", 2).unwrap();
+        assert_eq!(record.definitions[0].measure_words.len(), 1);
+        assert!(record.definitions[1].measure_words.is_empty());
     }
 
     #[test]

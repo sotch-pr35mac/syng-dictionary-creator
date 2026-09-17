@@ -198,7 +198,7 @@ fn parse_entry(
             report.diagnose("excluded-non-mandarin-sense");
             continue;
         }
-        let Some((leaf, parents)) = sense.glosses.split_last() else {
+        let Some(leaf) = sense.glosses.last() else {
             report.diagnose("sense-without-gloss");
             continue;
         };
@@ -208,10 +208,6 @@ fn parse_entry(
             continue;
         }
         let mut definition = Definition::new(leaf, Source::Wiktionary);
-        definition.context = parents
-            .iter()
-            .map(|context| Sourced::one(normalize_text(context), Source::Wiktionary))
-            .collect();
         if let Some(value) = part_of_speech {
             definition
                 .parts_of_speech
@@ -625,7 +621,7 @@ mod tests {
     }
 
     #[test]
-    fn preserves_context_and_only_structured_examples() {
+    fn preserves_leaf_gloss_and_only_structured_examples() {
         let json = entry_json(
             r#"[{"glosses":["fire-related things","fireworks"],"topics":["arts"],"examples":[{"type":"example","text":"看煙火","english":"watch fireworks"},{"type":"quotation","text":"quoted"},{"text":"unknown"}]}]"#,
             r#"[{"zh_pron":"yānhuǒ","tags":["Mandarin","Pinyin"]}]"#,
@@ -633,10 +629,6 @@ mod tests {
         let wrapper: Wrapper = serde_json::from_str(&json).unwrap();
         let mut report = SourceReport::default();
         let record = parse_entry(wrapper.raw, wrapper.source_line, &mut report).unwrap();
-        assert_eq!(
-            record.definitions[0].context[0].value,
-            "fire-related things"
-        );
         assert_eq!(record.definitions[0].gloss.value, "fireworks");
         assert_eq!(record.definitions[0].examples.len(), 1);
         assert_eq!(
@@ -796,7 +788,6 @@ mod tests {
             record.definitions[0].gloss.value,
             "perfect; excellent; flawless"
         );
-        assert_eq!(record.definitions[0].context[0].value, "quality");
     }
 
     #[test]

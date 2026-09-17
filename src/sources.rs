@@ -15,6 +15,12 @@ use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 #[derive(Clone, Debug)]
+pub(crate) struct ParsedPronunciation {
+    pub pronunciation: Pinyin,
+    pub label: Option<String>,
+}
+
+#[derive(Clone, Debug)]
 pub(crate) struct ParsedRecord {
     pub source: Source,
     pub order: u64,
@@ -22,21 +28,23 @@ pub(crate) struct ParsedRecord {
     pub simplified: Option<String>,
     pub traditional: Option<String>,
     pub explicit_headwords: Vec<String>,
-    pub pinyin: Option<Pinyin>,
+    pub pronunciations: Vec<ParsedPronunciation>,
     pub definitions: Vec<Definition>,
     pub alternative_pronunciations: Vec<Sourced<AlternativePronunciation>>,
     pub measure_words: Vec<Sourced<LexicalId>>,
-    pub cited_cedict: bool,
     pub rejection: Option<String>,
 }
 
 impl ParsedRecord {
-    /// Returns the complete identity tuple when all three required fields exist.
+    /// Returns the complete identity tuple when exactly one pronunciation exists.
     pub fn valid_tuple(&self) -> Option<(&str, &str, &Pinyin)> {
+        let [pronunciation] = self.pronunciations.as_slice() else {
+            return None;
+        };
         Some((
             self.simplified.as_deref()?,
             self.traditional.as_deref()?,
-            self.pinyin.as_ref()?,
+            &pronunciation.pronunciation,
         ))
     }
 }
@@ -78,8 +86,14 @@ pub struct BuildReport {
     pub lexical_units: u64,
     /// Number of definitions in the completed combination.
     pub definitions: u64,
-    /// Number of cited Chinese Notes glosses suppressed as potentially stale.
-    pub suppressed_stale_chinese_notes_glosses: u64,
+    /// Number of Chinese Notes records that enriched an exact existing sense.
+    pub chinese_notes_enriched_records: u64,
+    /// Number of identities present in the generated commonness database.
+    pub commonness_database_records: u64,
+    /// Number of published lexical units assigned a score greater than zero.
+    pub commonness_nonzero_units: u64,
+    /// SHA-256 digest of the generated commonness database used for this build.
+    pub commonness_database_sha256: String,
 }
 
 /// Parses every required source artifact in deterministic source order.
@@ -195,11 +209,10 @@ pub(crate) fn rejected_record(
         simplified: None,
         traditional: None,
         explicit_headwords: Vec::new(),
-        pinyin: None,
+        pronunciations: Vec::new(),
         definitions: Vec::new(),
         alternative_pronunciations: Vec::new(),
         measure_words: Vec::new(),
-        cited_cedict: false,
         rejection: Some(reason.into()),
     }
 }

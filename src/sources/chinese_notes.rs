@@ -1,6 +1,6 @@
 //! Typed adapter for the pinned 16-column Chinese Notes TSV export.
 
-use super::{ParsedRecord, SourceReport, rejected_record};
+use super::{ParsedPronunciation, ParsedRecord, SourceReport, rejected_record};
 use crate::model::{
     Definition, LexicalKind, PartOfSpeech, Qualifier, QualifierCategory, Source, Sourced,
     normalize_headword, normalize_text,
@@ -43,9 +43,9 @@ pub(crate) fn parse_line(line: &str, line_number: u64) -> Result<ParsedRecord> {
     }
     let simplified = normalize_headword(columns[1]).context("invalid-simplified-headword")?;
     let traditional = if columns[2] == r"\N" {
-        simplified.clone()
+        None
     } else {
-        normalize_headword(columns[2]).context("invalid-traditional-headword")?
+        Some(normalize_headword(columns[2]).context("invalid-traditional-headword")?)
     };
     let expected_syllables = han_character_count(&simplified);
     let pinyin = from_marked(
@@ -90,7 +90,6 @@ pub(crate) fn parse_line(line: &str, line_number: u64) -> Result<ParsedRecord> {
     }
 
     let notes = columns[14];
-    let cited_cedict = notes.contains("CC-CEDICT");
     if let Some(commentary) = substantive_commentary(notes) {
         definition
             .commentary
@@ -102,13 +101,15 @@ pub(crate) fn parse_line(line: &str, line_number: u64) -> Result<ParsedRecord> {
         order: line_number,
         locator: format!("line:{line_number};row:{}", columns[0]),
         simplified: Some(simplified.clone()),
-        traditional: Some(traditional.clone()),
-        explicit_headwords: vec![simplified, traditional],
-        pinyin: Some(pinyin),
+        traditional: traditional.clone(),
+        explicit_headwords: std::iter::once(simplified).chain(traditional).collect(),
+        pronunciations: vec![ParsedPronunciation {
+            pronunciation: pinyin,
+            label: None,
+        }],
         definitions: vec![definition],
         alternative_pronunciations: Vec::new(),
         measure_words: Vec::new(),
-        cited_cedict,
         rejection: None,
     })
 }
@@ -241,13 +242,12 @@ mod tests {
     #[test]
     fn parses_sentinel_and_keeps_english_whole() {
         let record = parse_line(&row(r"\N", "noun", "(CC-CEDICT '炒米')"), 2).unwrap();
-        assert_eq!(record.traditional.as_deref(), Some("炒米"));
+        assert_eq!(record.traditional, None);
         assert_eq!(
             record.definitions[0].gloss.value,
             "roasted rice; parched rice"
         );
         assert!(record.definitions[0].commentary.is_empty());
-        assert!(record.cited_cedict);
     }
 
     #[test]

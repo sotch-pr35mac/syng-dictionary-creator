@@ -1,14 +1,15 @@
 //! Streaming adapter for retained Chinese entries from English Wiktionary JSONL.
 
-use super::{ParsedRecord, SourceReport, rejected_record};
+use super::{ParsedPronunciation, ParsedRecord, SourceReport, rejected_record};
 use crate::model::{
     Definition, Example, LexicalKind, PartOfSpeech, Qualifier, QualifierCategory, Source, Sourced,
     normalize_headword, normalize_text,
 };
 use crate::pinyin::{from_marked, han_character_count};
 use anyhow::{Context, Result, bail};
+use character_converter::{simplified_to_traditional, traditional_to_simplified};
 use serde::Deserialize;
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::io::BufRead;
 
 #[derive(Debug, Deserialize)]
@@ -66,6 +67,8 @@ struct WikiSense {
 struct WikiExample {
     #[serde(rename = "type")]
     kind: Option<String>,
+    #[serde(default)]
+    tags: Vec<String>,
     #[serde(default)]
     text: Option<String>,
     #[serde(default)]
@@ -156,7 +159,7 @@ fn parse_entry(
         .map(han_character_count)
         .filter(|count| *count > 0);
 
-    let mut pronunciations = BTreeSet::new();
+    let mut pronunciations = BTreeMap::new();
     for sound in &entry.sounds {
         let is_mandarin_pinyin = sound.tags.iter().any(|tag| tag == "Mandarin")
             && sound.tags.iter().any(|tag| tag == "Pinyin")
@@ -167,19 +170,27 @@ fn parse_entry(
         if let Some(value) = &sound.zh_pron
             && let Ok(pronunciation) = from_marked(value, expected_syllables)
         {
-            pronunciations.insert(pronunciation);
+            let labels = pronunciations
+                .entry(pronunciation)
+                .or_insert_with(BTreeSet::new);
+            if sound.tags.iter().any(|tag| tag == "Taiwan") {
+                labels.insert("Taiwan pr.".to_owned());
+            }
+            if sound.tags.iter().any(|tag| tag == "Mainland-China") {
+                labels.insert("Mainland China pr.".to_owned());
+            }
         }
     }
     if pronunciations.is_empty() {
         bail!("missing-explicit-mandarin-pinyin");
     }
-    if pronunciations.len() != 1 {
-        bail!("ambiguous-mandarin-pinyin-scope");
-    }
-    let pinyin = pronunciations
+    let pronunciations = pronunciations
         .into_iter()
-        .next()
-        .expect("one pronunciation");
+        .map(|(pronunciation, labels)| ParsedPronunciation {
+            pronunciation,
+            label: (!labels.is_empty()).then(|| labels.into_iter().collect::<Vec<_>>().join("/")),
+        })
+        .collect::<Vec<_>>();
 
     let mut definitions = Vec::new();
     for sense in entry.senses {
@@ -231,29 +242,7 @@ fn parse_entry(
                     .push(Sourced::one(qualifier, Source::Wiktionary));
             }
         }
-        for example in sense.examples {
-            match example.kind.as_deref() {
-                Some("example") => {
-                    if let Some(chinese) = example.text.filter(|text| !text.trim().is_empty()) {
-                        definition.examples.push(Sourced::one(
-                            Example {
-                                chinese: normalize_text(&chinese),
-                                english: example
-                                    .english
-                                    .or(example.translation)
-                                    .map(|english| normalize_text(&english))
-                                    .filter(|english| !english.is_empty()),
-                            },
-                            Source::Wiktionary,
-                        ));
-                    } else {
-                        report.diagnose("example-without-text");
-                    }
-                }
-                Some("quotation") => report.excluded_quotations += 1,
-                _ => report.excluded_unknown_examples += 1,
-            }
-        }
+        definition.examples = parse_examples(sense.examples, report);
         definitions.push(definition);
     }
     if definitions.is_empty() {
@@ -275,13 +264,231 @@ fn parse_entry(
         simplified,
         traditional,
         explicit_headwords,
-        pinyin: Some(pinyin),
+        pronunciations,
         definitions,
         alternative_pronunciations: Vec::new(),
         measure_words: Vec::new(),
-        cited_cedict: false,
         rejection: None,
     })
+}
+
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+enum ExampleScript {
+    Simplified,
+    Traditional,
+    Both,
+}
+
+#[derive(Clone, Debug)]
+struct ExampleCandidate {
+    order: usize,
+    chinese: String,
+    english: Option<String>,
+    script: ExampleScript,
+}
+
+/// Pairs script variants using exact English and converter-derived character keys.
+fn parse_examples(examples: Vec<WikiExample>, report: &mut SourceReport) -> Vec<Sourced<Example>> {
+    let mut groups = BTreeMap::<(Option<String>, String, String), Vec<ExampleCandidate>>::new();
+    for (order, example) in examples.into_iter().enumerate() {
+        match example.kind.as_deref() {
+            Some("quotation") => {
+                report.excluded_quotations += 1;
+                continue;
+            }
+            Some("example") => {}
+            _ => {
+                report.excluded_unknown_examples += 1;
+                continue;
+            }
+        }
+        let Some(chinese) = example
+            .text
+            .map(|text| normalize_text(&text))
+            .filter(|text| !text.is_empty())
+        else {
+            report.diagnose("example-without-text");
+            continue;
+        };
+        let english = example
+            .english
+            .or(example.translation)
+            .map(|english| normalize_text(&english))
+            .filter(|english| !english.is_empty());
+        let simplified_key = traditional_to_simplified(&chinese);
+        let traditional_key = simplified_to_traditional(&chinese);
+        let tagged_simplified = example.tags.iter().any(|tag| tag == "Simplified-Chinese");
+        let tagged_traditional = example.tags.iter().any(|tag| tag == "Traditional-Chinese");
+        let script = match (tagged_simplified, tagged_traditional) {
+            (true, true) => ExampleScript::Both,
+            (true, false) => {
+                if chinese != simplified_key {
+                    report.diagnose("example-script-tag-conversion-mismatch");
+                }
+                ExampleScript::Simplified
+            }
+            (false, true) => {
+                if chinese != traditional_key {
+                    report.diagnose("example-script-tag-conversion-mismatch");
+                }
+                ExampleScript::Traditional
+            }
+            (false, false) if chinese == simplified_key && chinese == traditional_key => {
+                report.diagnose("inferred-script-neutral-example");
+                ExampleScript::Both
+            }
+            (false, false) if chinese == simplified_key => {
+                report.diagnose("inferred-simplified-example");
+                ExampleScript::Simplified
+            }
+            (false, false) if chinese == traditional_key => {
+                report.diagnose("inferred-traditional-example");
+                ExampleScript::Traditional
+            }
+            (false, false) => {
+                report.diagnose("unclassifiable-mixed-script-example");
+                continue;
+            }
+        };
+        groups
+            .entry((
+                english.clone(),
+                simplified_key.into_owned(),
+                traditional_key.into_owned(),
+            ))
+            .or_default()
+            .push(ExampleCandidate {
+                order,
+                chinese,
+                english,
+                script,
+            });
+    }
+
+    let mut paired = Vec::<(usize, Example)>::new();
+    for candidates in groups.values_mut() {
+        candidates.sort_by_key(|candidate| candidate.order);
+        let mut seen = BTreeSet::new();
+        candidates.retain(|candidate| seen.insert((candidate.chinese.clone(), candidate.script)));
+        let mut simplified = candidates
+            .iter()
+            .filter(|candidate| candidate.script == ExampleScript::Simplified)
+            .collect::<Vec<_>>();
+        let mut traditional = candidates
+            .iter()
+            .filter(|candidate| candidate.script == ExampleScript::Traditional)
+            .collect::<Vec<_>>();
+        let both = candidates
+            .iter()
+            .filter(|candidate| candidate.script == ExampleScript::Both)
+            .collect::<Vec<_>>();
+        let english = candidates
+            .first()
+            .expect("nonempty example group")
+            .english
+            .clone();
+
+        if simplified.len() > 1
+            || traditional.len() > 1
+            || both.len() > 1
+            || (!both.is_empty() && (!simplified.is_empty() || !traditional.is_empty()))
+        {
+            report.diagnose("ambiguous-example-conversion-class");
+            for candidate in candidates.iter() {
+                let (simplified, traditional) = match candidate.script {
+                    ExampleScript::Simplified => (Some(candidate.chinese.clone()), None),
+                    ExampleScript::Traditional => (None, Some(candidate.chinese.clone())),
+                    ExampleScript::Both => (
+                        Some(candidate.chinese.clone()),
+                        Some(candidate.chinese.clone()),
+                    ),
+                };
+                paired.push((
+                    candidate.order,
+                    complete_example_scripts(
+                        simplified,
+                        traditional,
+                        candidate.english.clone(),
+                        report,
+                    ),
+                ));
+            }
+            continue;
+        }
+
+        if let Some(candidate) = both.first() {
+            paired.push((
+                candidate.order,
+                complete_example_scripts(
+                    Some(candidate.chinese.clone()),
+                    Some(candidate.chinese.clone()),
+                    english,
+                    report,
+                ),
+            ));
+            continue;
+        }
+        let simplified = simplified.pop();
+        let traditional = traditional.pop();
+        if simplified.is_some() && traditional.is_some() {
+            report.diagnose("paired-script-example");
+        }
+        let order = simplified
+            .map(|candidate| candidate.order)
+            .into_iter()
+            .chain(traditional.map(|candidate| candidate.order))
+            .min()
+            .expect("nonempty example group");
+        paired.push((
+            order,
+            complete_example_scripts(
+                simplified.map(|candidate| candidate.chinese.clone()),
+                traditional.map(|candidate| candidate.chinese.clone()),
+                english,
+                report,
+            ),
+        ));
+    }
+    paired.sort_by_key(|(order, _)| *order);
+    paired
+        .into_iter()
+        .map(|(_, example)| Sourced::one(example, Source::Wiktionary))
+        .collect()
+}
+
+/// Preserves source-attested text and generates only a missing script counterpart.
+fn complete_example_scripts(
+    simplified: Option<String>,
+    traditional: Option<String>,
+    english: Option<String>,
+    report: &mut SourceReport,
+) -> Example {
+    match (simplified, traditional) {
+        (Some(simplified), Some(traditional)) => Example {
+            simplified: Some(simplified),
+            traditional: Some(traditional),
+            english,
+        },
+        (Some(simplified), None) => {
+            let traditional = simplified_to_traditional(&simplified).into_owned();
+            report.diagnose("generated-traditional-example");
+            Example {
+                simplified: Some(simplified),
+                traditional: Some(traditional),
+                english,
+            }
+        }
+        (None, Some(traditional)) => {
+            let simplified = traditional_to_simplified(&traditional).into_owned();
+            report.diagnose("generated-simplified-example");
+            Example {
+                simplified: Some(simplified),
+                traditional: Some(traditional),
+                english,
+            }
+        }
+        (None, None) => unreachable!("accepted example has a classified Chinese form"),
+    }
 }
 
 /// Maps the reviewed Wiktionary part-of-speech vocabulary into closed enums.
@@ -424,12 +631,27 @@ mod tests {
         );
         assert_eq!(record.definitions[0].gloss.value, "fireworks");
         assert_eq!(record.definitions[0].examples.len(), 1);
+        assert_eq!(
+            record.definitions[0].examples[0]
+                .value
+                .traditional
+                .as_deref(),
+            Some("看煙火")
+        );
+        assert_eq!(
+            record.definitions[0].examples[0]
+                .value
+                .simplified
+                .as_deref(),
+            Some("看烟火")
+        );
+        assert_eq!(report.diagnostics["generated-simplified-example"], 1);
         assert_eq!(report.excluded_quotations, 1);
         assert_eq!(report.excluded_unknown_examples, 1);
     }
 
     #[test]
-    fn supports_historical_zh_pron_and_rejects_mixed_readings() {
+    fn supports_historical_zh_pron_and_retains_multiple_readings() {
         let json = entry_json(
             r#"[{"glosses":["fireworks"]}]"#,
             r#"[{"zh-pron":"yānhuǒ","tags":["Mandarin","Pinyin"]}]"#,
@@ -442,7 +664,8 @@ mod tests {
             r#"[{"zh_pron":"yānhuǒ","tags":["Mandarin","Pinyin"]},{"zh_pron":"yānhuō","tags":["Mandarin","Pinyin"]}]"#,
         );
         let wrapper: Wrapper = serde_json::from_str(&mixed).unwrap();
-        assert!(parse_entry(wrapper.raw, 7, &mut SourceReport::default()).is_err());
+        let record = parse_entry(wrapper.raw, 7, &mut SourceReport::default()).unwrap();
+        assert_eq!(record.pronunciations.len(), 2);
     }
 
     #[test]
@@ -549,5 +772,65 @@ mod tests {
             .collect::<Vec<_>>();
         assert_eq!(glosses, vec!["nucleon", "nucleus"]);
         assert_eq!(report.diagnostics["excluded-non-mandarin-sense"], 2);
+    }
+
+    #[test]
+    fn preserves_wiktionary_semicolons_inside_one_leaf_gloss() {
+        let json = entry_json(
+            r#"[{"glosses":["quality","perfect; excellent; flawless"]}]"#,
+            r#"[{"zh_pron":"yuánmǎn","tags":["Mandarin","Pinyin"]}]"#,
+        );
+        let wrapper: Wrapper = serde_json::from_str(&json).unwrap();
+        let record = parse_entry(wrapper.raw, 7, &mut SourceReport::default()).unwrap();
+
+        assert_eq!(record.definitions.len(), 1);
+        assert_eq!(
+            record.definitions[0].gloss.value,
+            "perfect; excellent; flawless"
+        );
+        assert_eq!(record.definitions[0].context[0].value, "quality");
+    }
+
+    #[test]
+    fn pairs_script_examples_by_conversion_with_and_without_english() {
+        let json = entry_json(
+            r#"[{"glosses":["complete"],"examples":[{"type":"example","text":"事情圓滿完成。","english":"It was completed successfully."},{"type":"example","text":"事情圆满完成。","english":"It was completed successfully."},{"type":"example","text":"圓滿結束。"},{"type":"example","text":"圆满结束。"}]}]"#,
+            r#"[{"zh_pron":"yuánmǎn","tags":["Mandarin","Pinyin"]}]"#,
+        );
+        let wrapper: Wrapper = serde_json::from_str(&json).unwrap();
+        let record = parse_entry(wrapper.raw, 7, &mut SourceReport::default()).unwrap();
+        let examples = &record.definitions[0].examples;
+        assert_eq!(examples.len(), 2);
+        assert_eq!(
+            examples[0].value.simplified.as_deref(),
+            Some("事情圆满完成。")
+        );
+        assert_eq!(
+            examples[0].value.traditional.as_deref(),
+            Some("事情圓滿完成。")
+        );
+        assert_eq!(examples[1].value.simplified.as_deref(), Some("圆满结束。"));
+        assert_eq!(examples[1].value.traditional.as_deref(), Some("圓滿結束。"));
+        assert_eq!(examples[1].value.english, None);
+    }
+
+    #[test]
+    fn generates_only_the_missing_example_script() {
+        let json = entry_json(
+            r#"[{"glosses":["complete"],"examples":[{"type":"example","text":"学习中文。","tags":["Simplified-Chinese"]},{"type":"example","text":"觀看煙火。","tags":["Traditional-Chinese"]}]}]"#,
+            r#"[{"zh_pron":"yuánmǎn","tags":["Mandarin","Pinyin"]}]"#,
+        );
+        let wrapper: Wrapper = serde_json::from_str(&json).unwrap();
+        let mut report = SourceReport::default();
+        let record = parse_entry(wrapper.raw, 7, &mut report).unwrap();
+        let examples = &record.definitions[0].examples;
+
+        assert_eq!(examples.len(), 2);
+        assert_eq!(examples[0].value.simplified.as_deref(), Some("学习中文。"));
+        assert_eq!(examples[0].value.traditional.as_deref(), Some("學習中文。"));
+        assert_eq!(examples[1].value.simplified.as_deref(), Some("观看烟火。"));
+        assert_eq!(examples[1].value.traditional.as_deref(), Some("觀看煙火。"));
+        assert_eq!(report.diagnostics["generated-traditional-example"], 1);
+        assert_eq!(report.diagnostics["generated-simplified-example"], 1);
     }
 }

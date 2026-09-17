@@ -297,8 +297,10 @@ pub struct AlternativePronunciation {
     rkyv::Deserialize,
 )]
 pub struct Example {
-    /// Chinese example text.
-    pub chinese: String,
+    /// Simplified Chinese example text, source-attested or generated as a display fallback.
+    pub simplified: Option<String>,
+    /// Traditional Chinese example text, source-attested or generated as a display fallback.
+    pub traditional: Option<String>,
     /// English translation when the source provides one.
     pub english: Option<String>,
 }
@@ -391,6 +393,8 @@ pub enum LexicalKind {
     Foreign,
     /// Infix.
     Infix,
+    /// Idiomatic expression.
+    Idiom,
     /// Productive lexical pattern.
     Pattern,
     /// Multiword phrase.
@@ -471,7 +475,6 @@ pub enum PartOfSpeech {
 #[derive(
     Clone,
     Debug,
-    Eq,
     PartialEq,
     Serialize,
     Deserialize,
@@ -573,7 +576,6 @@ pub struct HskLevels {
 #[derive(
     Clone,
     Debug,
-    Eq,
     PartialEq,
     Serialize,
     Deserialize,
@@ -590,6 +592,8 @@ pub struct LexicalUnit {
     pub traditional: String,
     /// Primary Mandarin pronunciation.
     pub pinyin: Pinyin,
+    /// Document-normalized commonness score; zero means unseen in the frequency corpora.
+    pub commonness: f32,
     /// Entity-scoped pronunciation variants without their own lexical entity.
     pub alternative_pronunciations: Vec<Sourced<AlternativePronunciation>>,
     /// Entity-scoped classifier identities.

@@ -15,8 +15,8 @@
       "license_evidence_url": "https://cc-cedict.org/editor/editor.php?handler=Download",
       "copyright_notice": "CC-CEDICT, published by MDBG. Referenced work: CEDICT, Copyright (C) 1997, 1998 Paul Andrew Denisowski.",
       "attribution": "CC-CEDICT: Community maintained free Chinese-English dictionary, published by MDBG. CEDICT originated with Paul Andrew Denisowski.",
-      "modifications": "Parsed, normalized, filtered, structurally annotated, merged with other sources, and indexed by Syng Dictionary Creator.",
-      "parser_version": 1
+      "modifications": "Parsed, normalized, split into documented definition entries, structurally annotated through reviewed labels, merged with other sources, and indexed by Syng Dictionary Creator.",
+      "parser_version": 2
     },
     {
       "source": "chinese-notes",
@@ -32,8 +32,8 @@
       "license_evidence_url": "https://chinesenotes.com/about",
       "copyright_notice": "Copyright Fo Guang Shan 佛光山 2013-2025.",
       "attribution": "Chinese Notes Chinese-English dictionary, Copyright Fo Guang Shan 佛光山 2013-2025; project maintained by Alex Amies with upstream contributors acknowledged by Chinese Notes.",
-      "modifications": "Parsed, normalized, filtered, structurally annotated, merged with other sources, and indexed by Syng Dictionary Creator.",
-      "parser_version": 1
+      "modifications": "Used only to enrich exact pre-existing lexical identities and exact existing senses with whitelisted structured metadata; Chinese Notes does not establish identities or publish glosses.",
+      "parser_version": 2
     },
     {
       "source": "chinese-notes",
@@ -66,8 +66,8 @@
       "license_evidence_url": "https://en.wiktionary.org/wiki/Wiktionary:Copyrights",
       "copyright_notice": "English Wiktionary entry text is copyright its respective contributors.",
       "attribution": "English Wiktionary contributors; structured extraction by Tatu Ylonen's Wiktextract and distribution by Kaikki.org.",
-      "modifications": "Chinese records were retained from the Wiktextract snapshot, then Mandarin records and fields were conservatively selected, normalized, merged with other sources, and indexed by Syng Dictionary Creator. Quotations were excluded.",
-      "parser_version": 2
+      "modifications": "Chinese records were retained from the Wiktextract snapshot, then Mandarin records and fields were conservatively selected, normalized, routed through exact CC-CEDICT pronunciation evidence, and indexed by Syng Dictionary Creator. Deterministic simplified/traditional examples were paired, and missing script counterparts were generated as canonical display fallbacks without replacing source-attested text; quotations were excluded.",
+      "parser_version": 4
     },
     {
       "source": "princeton-word-net",

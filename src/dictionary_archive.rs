@@ -1,8 +1,8 @@
 //! Schema-4 zero-copy dictionary archive contract.
 //!
-//! This module is intentionally mirrored in the consumer crate. The shared
-//! fixture tests protect the contract without making the published consumer
-//! depend on the generator.
+//! This module is intentionally mirrored in the consumer crate. Its fixture
+//! pins the generator contract so the consumer can verify the schema-4 layout
+//! without depending on the generator.
 
 use crate::model::{IDENTITY_VERSION, LexicalUnit, SCHEMA_VERSION};
 use rkyv::{
@@ -126,7 +126,7 @@ mod tests {
     use sha2::{Digest, Sha256};
 
     #[test]
-    fn empty_contract_fixture_matches_the_consumer() {
+    fn empty_schema_four_contract_fixture_is_stable() {
         let archive = DictionaryArchive::new(
             Vec::new(),
             IdentityMap::new(Vec::new()),

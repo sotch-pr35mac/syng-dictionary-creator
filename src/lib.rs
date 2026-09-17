@@ -15,15 +15,20 @@ pub mod pinyin;
 /// Typed adapters for the pinned upstream dictionary sources.
 pub mod sources;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
+use sha2::{Digest, Sha256};
+use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
+use syng_word_frequency::CommonnessDatabase;
 
 /// Filesystem locations used by fetch and build operations.
 #[derive(Clone, Debug)]
 pub struct BuildOptions {
     /// Directory containing checksum-verified source artifacts.
     pub cache_directory: PathBuf,
+    /// Generated local database of commonness scores keyed by lexical identity.
+    pub commonness_database: PathBuf,
     /// Directory where the completed dictionary bundle is published.
     pub output_directory: PathBuf,
     /// Checked-in source lock file containing pins and licensing metadata.
@@ -56,11 +61,37 @@ pub fn build(options: &BuildOptions) -> Result<()> {
     let record_count = records.len();
     let stage_started = Instant::now();
     eprintln!("Combining {record_count} parsed source records...");
-    let lexical_units = combine::combine(records, &mut report)?;
+    let mut lexical_units = combine::combine(records, &mut report)?;
     eprintln!(
         "Combined records into {} lexical units and {} definitions in {:.1?}.",
         report.lexical_units,
         report.definitions,
+        stage_started.elapsed()
+    );
+
+    let stage_started = Instant::now();
+    let commonness_bytes = fs::read(&options.commonness_database).with_context(|| {
+        format!(
+            "read commonness database {}",
+            options.commonness_database.display()
+        )
+    })?;
+    let commonness = CommonnessDatabase::open(&options.commonness_database)?;
+    let mut nonzero_scores = 0_u64;
+    for unit in &mut lexical_units {
+        let score = commonness.score_digest(unit.id.digest());
+        if !score.is_finite() || score < 0.0 {
+            anyhow::bail!("invalid commonness score {score:?} for {}", unit.id);
+        }
+        unit.commonness = score;
+        nonzero_scores += u64::from(score > 0.0);
+    }
+    report.commonness_database_records = u64::try_from(commonness.len())?;
+    report.commonness_nonzero_units = nonzero_scores;
+    report.commonness_database_sha256 = format!("{:x}", Sha256::digest(&commonness_bytes));
+    eprintln!(
+        "Applied {nonzero_scores} nonzero commonness scores from {} database records in {:.1?}.",
+        commonness.len(),
         stage_started.elapsed()
     );
 

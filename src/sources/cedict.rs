@@ -1,9 +1,9 @@
 //! Typed adapter for CC-CEDICT V1 and V2 text records.
 
-use super::{ParsedRecord, SourceReport, rejected_record};
+use super::{ParsedPronunciation, ParsedRecord, SourceReport, rejected_record};
 use crate::model::{
-    AlternativePronunciation, Definition, LexicalId, Qualifier, QualifierCategory, Source, Sourced,
-    normalize_headword, normalize_text,
+    AlternativePronunciation, Definition, LexicalId, LexicalKind, Qualifier, QualifierCategory,
+    Source, Sourced, normalize_headword, normalize_text,
 };
 use crate::pinyin::from_numbered;
 use anyhow::{Context, Result, bail};
@@ -19,8 +19,8 @@ static CLASSIFIER: LazyLock<Regex> =
 static ALTERNATIVE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"(Taiwan pr\.|also pr\.)\s*\[([^\]]+)\]").expect("pronunciation regex")
 });
-static LEADING_QUALIFIER: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"^\(([^()]*)\)\s*").expect("qualifier regex"));
+static PARENTHETICAL: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\(([^()]*)\)").expect("parenthetical regex"));
 
 /// Parses a complete CC-CEDICT stream while retaining an outcome for every entry.
 pub(crate) fn parse(reader: impl BufRead, report: &mut SourceReport) -> Result<Vec<ParsedRecord>> {
@@ -93,20 +93,31 @@ pub(crate) fn parse_line(line: &str, line_number: u64) -> Result<ParsedRecord> {
 
         let mut gloss = CLASSIFIER.replace_all(raw_definition, "").to_string();
         gloss = ALTERNATIVE.replace_all(&gloss, "").to_string();
-        let (gloss, qualifiers) = extract_qualifiers(&gloss);
-        let gloss = normalize_text(&gloss);
-        if gloss.is_empty() {
+        let (gloss, qualifiers, lexical_kinds) = extract_labels(&gloss);
+        let glosses = gloss
+            .split(';')
+            .map(normalize_text)
+            .filter(|gloss| !gloss.is_empty())
+            .collect::<Vec<_>>();
+        if glosses.is_empty() && !alternatives.is_empty() {
+            alternative_pronunciations.extend(alternatives);
+            continue;
+        }
+        if glosses.is_empty() {
             bail!("empty-definition-after-annotations at line {line_number}");
         }
-        let mut definition = Definition::new(gloss, Source::CcCedict);
-        definition.qualifiers = qualifiers;
-        definition.alternative_pronunciations = alternatives;
+        let mut scoped_measure_words = Vec::new();
         for capture in CLASSIFIER.captures_iter(raw_definition) {
-            definition
-                .measure_words
-                .extend(parse_classifiers(&capture[1], Source::CcCedict)?);
+            scoped_measure_words.extend(parse_classifiers(&capture[1], Source::CcCedict)?);
         }
-        definitions.push(definition);
+        for gloss in glosses {
+            let mut definition = Definition::new(gloss, Source::CcCedict);
+            definition.qualifiers = qualifiers.clone();
+            definition.lexical_kinds = lexical_kinds.clone();
+            definition.alternative_pronunciations = alternatives.clone();
+            definition.measure_words = scoped_measure_words.clone();
+            definitions.push(definition);
+        }
     }
 
     Ok(ParsedRecord {
@@ -116,11 +127,13 @@ pub(crate) fn parse_line(line: &str, line_number: u64) -> Result<ParsedRecord> {
         simplified: Some(simplified.clone()),
         traditional: Some(traditional.clone()),
         explicit_headwords: vec![simplified, traditional],
-        pinyin: Some(pinyin),
+        pronunciations: vec![ParsedPronunciation {
+            pronunciation: pinyin,
+            label: None,
+        }],
         definitions,
         alternative_pronunciations,
         measure_words,
-        cited_cedict: false,
         rejection: None,
     })
 }
@@ -192,38 +205,76 @@ fn parse_alternatives(value: &str) -> Result<Vec<Sourced<AlternativePronunciatio
     Ok(results)
 }
 
-/// Removes only approved leading parenthetical qualifiers from a gloss.
-fn extract_qualifiers(value: &str) -> (String, Vec<Sourced<Qualifier>>) {
-    let mut remainder = value.trim().to_owned();
+#[derive(Clone, Copy)]
+enum CedictLabel {
+    Qualifier(QualifierCategory, &'static str),
+    LexicalKind(LexicalKind),
+}
+
+/// Removes only reviewed complete parenthetical labels, wherever they occur.
+fn extract_labels(value: &str) -> (String, Vec<Sourced<Qualifier>>, Vec<Sourced<LexicalKind>>) {
+    let mut remainder = String::with_capacity(value.len());
     let mut qualifiers = Vec::new();
-    while let Some(capture) = LEADING_QUALIFIER.captures(&remainder) {
+    let mut lexical_kinds = Vec::new();
+    let mut copied_through = 0;
+    for capture in PARENTHETICAL.captures_iter(value) {
         let raw = &capture[1];
         let mapped = match raw {
-            "coll." => Some((QualifierCategory::Register, "colloquial")),
-            "slang" | "Internet slang" => Some((QualifierCategory::Register, raw)),
-            "literary" | "archaic" => Some((QualifierCategory::Usage, raw)),
-            "Tw" | "Taiwan" => Some((QualifierCategory::Region, "Taiwan")),
-            "dialect" => Some((QualifierCategory::Region, raw)),
+            "idiom" => Some(CedictLabel::LexicalKind(LexicalKind::Idiom)),
+            "coll." => Some(CedictLabel::Qualifier(
+                QualifierCategory::Register,
+                "colloquial",
+            )),
+            "slang" => Some(CedictLabel::Qualifier(QualifierCategory::Register, "slang")),
+            "Internet slang" => Some(CedictLabel::Qualifier(
+                QualifierCategory::Register,
+                "Internet slang",
+            )),
+            "literary" => Some(CedictLabel::Qualifier(QualifierCategory::Usage, "literary")),
+            "archaic" => Some(CedictLabel::Qualifier(QualifierCategory::Usage, "archaic")),
+            "Tw" | "Taiwan" => Some(CedictLabel::Qualifier(QualifierCategory::Region, "Taiwan")),
+            "dialect" => Some(CedictLabel::Qualifier(QualifierCategory::Region, "dialect")),
             "computing" | "medicine" | "math." | "mathematics" | "botany" | "chemistry" => {
-                Some((QualifierCategory::Domain, raw))
+                Some(CedictLabel::Qualifier(
+                    QualifierCategory::Domain,
+                    match raw {
+                        "computing" => "computing",
+                        "medicine" => "medicine",
+                        "math." => "math.",
+                        "mathematics" => "mathematics",
+                        "botany" => "botany",
+                        "chemistry" => "chemistry",
+                        _ => unreachable!(),
+                    },
+                ))
             }
             _ => None,
         };
-        let Some((category, mapped_value)) = mapped else {
-            break;
+        let Some(mapped) = mapped else {
+            continue;
         };
-        qualifiers.push(Sourced::one(
-            Qualifier {
-                category,
-                value: mapped_value.to_owned(),
-            },
-            Source::CcCedict,
-        ));
-        remainder = remainder[capture.get(0).expect("whole qualifier").end()..]
-            .trim_start()
-            .to_owned();
+        let whole = capture.get(0).expect("whole label");
+        remainder.push_str(&value[copied_through..whole.start()]);
+        copied_through = whole.end();
+        match mapped {
+            CedictLabel::Qualifier(category, mapped_value) => qualifiers.push(Sourced::one(
+                Qualifier {
+                    category,
+                    value: mapped_value.to_owned(),
+                },
+                Source::CcCedict,
+            )),
+            CedictLabel::LexicalKind(value) => {
+                lexical_kinds.push(Sourced::one(value, Source::CcCedict));
+            }
+        }
     }
-    (remainder, qualifiers)
+    remainder.push_str(&value[copied_through..]);
+    (
+        remainder.split_whitespace().collect::<Vec<_>>().join(" "),
+        qualifiers,
+        lexical_kinds,
+    )
 }
 
 #[cfg(test)]
@@ -231,7 +282,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn preserves_semicolons_and_extracts_inline_classifiers() {
+    fn separates_semicolon_glosses_and_extracts_inline_classifiers() {
         let record = parse_line(
             "經歷 经历 [jing1 li4] /experience (CL:段[duan4],次[ci4])/to experience/",
             1,
@@ -242,7 +293,9 @@ mod tests {
         assert_eq!(record.definitions[1].gloss.value, "to experience");
 
         let record = parse_line("和 和 [[he2]] /and; together with/", 2).unwrap();
-        assert_eq!(record.definitions[0].gloss.value, "and; together with");
+        assert_eq!(record.definitions.len(), 2);
+        assert_eq!(record.definitions[0].gloss.value, "and");
+        assert_eq!(record.definitions[1].gloss.value, "together with");
     }
 
     #[test]
@@ -273,6 +326,17 @@ mod tests {
         let record = parse_line("甲 甲 [jia3] /(coll.) first (explanation)/", 1).unwrap();
         assert_eq!(record.definitions[0].gloss.value, "first (explanation)");
         assert_eq!(record.definitions[0].qualifiers.len(), 1);
+
+        let idiom = parse_line(
+            "天作之合 天作之合 [tian1 zuo4 zhi1 he2] /a match made in heaven (idiom)/",
+            2,
+        )
+        .unwrap();
+        assert_eq!(idiom.definitions[0].gloss.value, "a match made in heaven");
+        assert_eq!(
+            idiom.definitions[0].lexical_kinds[0].value,
+            LexicalKind::Idiom
+        );
     }
 
     #[test]
@@ -282,15 +346,24 @@ mod tests {
             1,
         )
         .unwrap();
-        assert_eq!(idiom.pinyin.unwrap().numbers, "yi1bu4zuo4er4bu4xiu1");
+        assert_eq!(
+            idiom.pronunciations[0].pronunciation.numbers,
+            "yi1bu4zuo4er4bu4xiu1"
+        );
 
         let name = parse_line("亞當·斯密 亚当·斯密 [Ya4 dang1 · Si1 mi4] /Adam Smith/", 2).unwrap();
-        assert_eq!(name.pinyin.unwrap().numbers, "Ya4dang1Si1mi4");
+        assert_eq!(
+            name.pronunciations[0].pronunciation.numbers,
+            "Ya4dang1Si1mi4"
+        );
 
         for (line_number, tone) in [(3, 1), (4, 2), (5, 4)] {
             let record =
                 parse_line(&format!("呣 呣 [m{tone}] /syllabic nasal/"), line_number).unwrap();
-            assert_eq!(record.pinyin.unwrap().numbers, format!("m{tone}"));
+            assert_eq!(
+                record.pronunciations[0].pronunciation.numbers,
+                format!("m{tone}")
+            );
         }
     }
 

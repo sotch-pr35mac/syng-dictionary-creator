@@ -771,6 +771,9 @@ pub fn validate_bundle(directory: &Path) -> Result<()> {
         if from_numbered(&unit.pinyin.numbers)? != unit.pinyin {
             bail!("noncanonical pinyin for {}", unit.id);
         }
+        if !unit.commonness.is_finite() || unit.commonness < 0.0 {
+            bail!("invalid commonness score for {}", unit.id);
+        }
         for alternative in unit.alternative_pronunciations.iter().chain(
             unit.english
                 .iter()
@@ -982,6 +985,25 @@ fn validate_sources(unit: &LexicalUnit) -> Result<()> {
         }
         for value in &definition.examples {
             require_sources(value, "example")?;
+            if value.value.simplified.is_none() || value.value.traditional.is_none() {
+                bail!("example is missing a simplified or traditional display form");
+            }
+            for text in [
+                value.value.simplified.as_deref(),
+                value.value.traditional.as_deref(),
+            ]
+            .into_iter()
+            .flatten()
+            {
+                if crate::model::normalize_text(text) != text {
+                    bail!("example contains noncanonical Chinese text");
+                }
+            }
+            if let Some(english) = &value.value.english
+                && crate::model::normalize_text(english) != *english
+            {
+                bail!("example contains noncanonical English text");
+            }
         }
         for value in &definition.commentary {
             require_sources(value, "commentary")?;
@@ -1083,6 +1105,7 @@ mod tests {
             simplified: "烟火".to_owned(),
             traditional: "煙火".to_owned(),
             pinyin,
+            commonness: 0.0,
             alternative_pronunciations: Vec::new(),
             measure_words: Vec::new(),
             hsk: HskLevels::default(),
@@ -1212,6 +1235,26 @@ mod tests {
         let mut stray_key = simplified.clone();
         stray_key.insert(String::new(), Vec::new());
         assert!(validate_headword_indexes(&data, &stray_key, &traditional).is_err());
+    }
+
+    #[test]
+    fn bundle_rejects_nonfinite_or_negative_commonness() {
+        let temporary = TempDir::new().unwrap();
+        let lock = fixture_lock(temporary.path());
+        for (name, score) in [("nan", f32::NAN), ("negative", -0.5)] {
+            let mut lexical_unit = unit();
+            lexical_unit.commonness = score;
+            assert!(
+                write_bundle(
+                    &temporary.path().join(name),
+                    temporary.path(),
+                    &lock,
+                    vec![lexical_unit],
+                    BuildReport::default(),
+                )
+                .is_err()
+            );
+        }
     }
 
     #[test]

@@ -5,7 +5,7 @@ English search container. Schema 4 deliberately leaves this encoding and its
 normalization versions unchanged; the consumer performs planning, ranking,
 deduplication, limits, and completion over these sections.
 
-The English artifact contains token and text tables, direct and positional
+Each definition gloss is indexed independently. The English artifact contains token and text tables, direct and positional
 bindings, occurrence lists, and WordNet-derived morphology. All runtime keys
 refer to positions in `DictionaryArchive::lexical_units`. Generation sorts and
 deduplicates each association, validates every referenced runtime key, checks
@@ -22,3 +22,10 @@ place.
 The generator and consumer keep matching private format modules. Any wire
 change must update schema/version constants and shared fixtures together. Pure
 runtime query optimizations do not require an English wire-format version bump.
+
+Each archived lexical unit separately carries its document-normalized
+`commonness` score from the local `syng-word-frequency` database. The English
+container deliberately does not duplicate that value: its runtime keys already
+address lexical units, so the consumer can apply commonness while ranking hits
+within each selected query span or concept. A zero score means unseen in the
+frequency corpora and must not filter an otherwise legitimate result.

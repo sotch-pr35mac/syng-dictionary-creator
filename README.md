@@ -1,6 +1,6 @@
 # Syng Dictionary Creator
 
-This crate builds Syng's Chinese–English dictionary bundle from pinned snapshots of CC-CEDICT, Chinese Notes, English Wiktionary, and Princeton WordNet. Version 4 publishes the lexical corpus as a validated zero-copy archive while retaining the specialized English search container.
+This crate builds Syng's Chinese–English dictionary bundle from pinned snapshots of CC-CEDICT, Chinese Notes, English Wiktionary, and Princeton WordNet, plus the locally generated Syng word-frequency database. Version 4 publishes the lexical corpus as a validated zero-copy archive while retaining the specialized English search container.
 
 The pipeline is written in Rust, is offline by default, keeps source attribution on every published assertion, and produces byte-for-byte deterministic artifacts from the same verified inputs.
 
@@ -24,7 +24,9 @@ Validate an existing bundle, including archive structure, checksums, identities,
 cargo run -- validate
 ```
 
-All commands accept `--cache-dir PATH`, `--output-dir PATH`, and `--lock-file PATH`. `build` never downloads missing inputs; it reports the missing path and tells the operator to run `fetch` explicitly.
+All commands accept `--cache-dir PATH`, `--commonness-db PATH`, `--output-dir PATH`, and `--lock-file PATH`. `--commonness-db` defaults to `/Volumes/Passport/Projects/word_frequency/output/syng-commonness.bin`. `build` never downloads missing inputs; it reports the missing path and tells the operator to run `fetch` explicitly.
+
+The creator consumes that database through the local `syng-word-frequency` crate. Each lexical identity receives its stored document-normalized commonness score, or `0.0` when the frequency corpora did not observe it. The database checksum, record count, and number of nonzero published scores are recorded in `build-report.json`.
 
 `sources.lock.json` records source URLs, revisions, SHA-256 checksums, SPDX licenses, license and evidence URLs, copyright notices, attribution text, modification notices, and parser versions. The creator rejects an unreviewed source-license value. A changed input or an unknown structured grammar/POS value stops publication so its mapping can be reviewed.
 
@@ -64,7 +66,8 @@ struct AlternativePronunciation {
 }
 
 struct Example {
-    chinese: String,
+    simplified: Option<String>,
+    traditional: Option<String>,
     english: Option<String>,
 }
 
@@ -85,6 +88,7 @@ struct LexicalUnit {
     simplified: String,
     traditional: String,
     pinyin: Pinyin,
+    commonness: f32,
     alternative_pronunciations: Vec<Sourced<AlternativePronunciation>>,
     measure_words: Vec<Sourced<LexicalId>>,
     hsk: HskLevels,
@@ -92,9 +96,15 @@ struct LexicalUnit {
 }
 ```
 
-Vectors are always present, including when empty. Source-native IDs, parser records, raw rows, and unbounded source payloads are build-time data and are not serialized into a `LexicalUnit`.
+Vectors are always present, including when empty. `commonness` is a finite, nonnegative ranking prior rather than a vocabulary filter; zero means the identity was unseen in the configured frequency corpora. Source-native IDs, parser records, raw rows, and unbounded source payloads are build-time data and are not serialized into a `LexicalUnit`.
 
-Standalone classifiers and alternate pronunciations stay at lexical-unit scope. Inline/sense-specific values stay on their definition. An alternative pronunciation is embedded only when the alternate tuple does not already have its own lexical entity.
+Standalone classifiers and alternate pronunciations stay at lexical-unit scope. Inline/sense-specific values stay on their definition. Alternative-pronunciation evidence is retained even when another lexical identity uses the same pronunciation; the two assertions have different learner-facing purposes.
+
+CC-CEDICT establishes the initial identity set. Slash and semicolon separators produce ordered definition entries. Only closed, reviewed parenthetical labels such as `(idiom)` are converted to structured metadata; unrecognized parentheticals remain literal gloss text.
+
+Wiktionary may establish an exact single-pronunciation identity. A multi-pronunciation Wiktionary record enriches one CC-CEDICT identity only when the same written forms and CC-CEDICT primary/alternative pronunciation evidence identify one owner. Distinct single-pronunciation records remain distinct identities. Simplified and traditional examples are paired within one sense using exact English text and converter-derived script keys; ambiguous conversion classes remain separate. Every accepted example publishes both script forms: source-attested text is preserved, and a missing counterpart is generated with the pinned character converter for display fallback.
+
+Chinese Notes is enrichment-only. It cannot establish lexical identities or publish glosses. A row must exactly match a complete identity and an existing gloss before its whitelisted part-of-speech, lexical-kind, and domain metadata can be attached. The `\N` traditional sentinel remains incomplete for matching and is not inferred.
 
 ## Stable identity
 
@@ -123,7 +133,7 @@ The published bundle contains:
 - `dictionary.rkyv.zst`: dense lexical records, fixed-digest identity lookup, and native Chinese/Pinyin FST maps with flat postings
 - `english.search.zst`: the complete versioned English lexical-search container, compressed as one deterministic Zstandard frame
 - `manifest.json`: source pins, licenses, attribution, counts, schema, and checksums
-- `build-report.json`: admitted, suppressed, rejected, and source-specific diagnostic counts
+- `build-report.json`: admitted, suppressed, rejected, source-specific diagnostic counts, and commonness input/coverage metadata
 - `LICENSE-DATA.txt`: license grant for the combined dictionary bundle
 - `LICENSE-WORDNET.txt`: Princeton WordNet 3.1 license notice and disclaimer
 - `NOTICE.md`: source copyrights, attribution, license evidence, and modification notices
@@ -136,7 +146,9 @@ The compressed English index has a 22 MiB publication ceiling. A larger build pr
 The canonical schema-4 archive and English format implementations remain local
 to this generator. `chinese_dictionary` keeps synchronized consumer-local
 definitions and shared fixtures, so its crates.io package has no unpublished
-path dependencies. Contract changes require coordinated fixture validation.
+path dependencies. Changes to the still-unreleased schema 4 contract require
+regenerating its fixtures and updating the consumer-local definitions before
+using a newly generated bundle downstream.
 
 ## Source and license notices
 

@@ -87,7 +87,12 @@ pub(crate) fn parse_line(line: &str, line_number: u64) -> Result<ParsedRecord> {
             continue;
         }
 
+        let mut saw_non_empty_segment = false;
         for raw_gloss in raw_definition.split(';') {
+            if raw_gloss.trim().is_empty() {
+                continue;
+            }
+            saw_non_empty_segment = true;
             let alternatives = parse_alternatives(raw_gloss)?;
             if !all_alternative_markers_matched(raw_gloss) {
                 bail!("malformed-pronunciation-annotation at line {line_number}");
@@ -118,6 +123,9 @@ pub(crate) fn parse_line(line: &str, line_number: u64) -> Result<ParsedRecord> {
             definition.alternative_pronunciations = alternatives;
             definition.measure_words = scoped_measure_words;
             definitions.push(definition);
+        }
+        if !saw_non_empty_segment {
+            bail!("empty-definition-after-annotations at line {line_number}");
         }
     }
 
@@ -297,6 +305,27 @@ mod tests {
         assert_eq!(record.definitions.len(), 2);
         assert_eq!(record.definitions[0].gloss.value, "and");
         assert_eq!(record.definitions[1].gloss.value, "together with");
+    }
+
+    #[test]
+    fn ignores_empty_semicolon_gloss_segments() {
+        for (glosses, expected) in [
+            ("and;", vec!["and"]),
+            (";and", vec!["and"]),
+            ("and;;together with", vec!["and", "together with"]),
+            ("and;  ", vec!["and"]),
+        ] {
+            let line = format!("和 和 [[he2]] /{glosses}/");
+            let record = parse_line(&line, 1).unwrap();
+            let values = record
+                .definitions
+                .iter()
+                .map(|definition| definition.gloss.value.as_str())
+                .collect::<Vec<_>>();
+            assert_eq!(values, expected);
+        }
+
+        assert!(parse_line("和 和 [[he2]] /;  ;/", 1).is_err());
     }
 
     #[test]

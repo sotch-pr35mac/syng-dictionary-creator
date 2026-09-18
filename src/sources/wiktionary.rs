@@ -528,6 +528,9 @@ fn is_dependent_continuation(value: &str) -> bool {
             "e.g.",
             "i.e.",
             "etc.",
+            "used ",
+            "until ",
+            "namely ",
         ]
         .iter()
         .any(|prefix| lower.starts_with(prefix))
@@ -1113,6 +1116,26 @@ mod tests {
             split_standalone_glosses("to march; especially in a procession"),
             vec!["to march; especially in a procession"]
         );
+        for (value, expected) in [
+            (
+                "to approach, be close to; used in 斥近",
+                vec!["to approach, be close to; used in 斥近"],
+            ),
+            (
+                "Particle used after verbs to show exhaustion or completion; until none is left",
+                vec![
+                    "Particle used after verbs to show exhaustion or completion; until none is left",
+                ],
+            ),
+            (
+                "the four divisions of Buddhist disciples; namely 比丘 (bǐqiū), 比丘尼 (bǐqiūní), 優婆塞 /优婆塞 (yōupósè), 優婆夷 /优婆夷 (yōupóyí)",
+                vec![
+                    "the four divisions of Buddhist disciples; namely 比丘 (bǐqiū), 比丘尼 (bǐqiūní), 優婆塞 /优婆塞 (yōupósè), 優婆夷 /优婆夷 (yōupóyí)",
+                ],
+            ),
+        ] {
+            assert_eq!(split_standalone_glosses(value), expected);
+        }
     }
 
     #[test]

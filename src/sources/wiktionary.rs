@@ -209,7 +209,10 @@ fn parse_entry(
             continue;
         }
         merge_measure_word_references(&mut measure_words, parsed_gloss.measure_words);
-        let examples = parse_examples(sense.examples, report);
+        // Examples belong to the Wiktionary sense, not to each semicolon
+        // alternative inside its leaf gloss. Keep them on the first emitted
+        // definition so splitting alternatives cannot publish duplicates.
+        let mut examples = parse_examples(sense.examples, report);
         let qualifiers = sense
             .topics
             .iter()
@@ -244,7 +247,7 @@ fn parse_entry(
                     .push(Sourced::one(value, Source::Wiktionary));
             }
             definition.qualifiers = qualifiers.clone();
-            definition.examples = examples.clone();
+            definition.examples = std::mem::take(&mut examples);
             definitions.push(definition);
         }
     }
@@ -472,16 +475,18 @@ fn split_standalone_glosses(value: &str) -> Vec<String> {
     if !final_segment.is_empty() {
         segments.push(final_segment);
     }
-    if segments.len() < 2
-        || segments
-            .iter()
-            .skip(1)
-            .any(|segment| is_dependent_continuation(segment))
-    {
-        vec![normalize_text(value)]
-    } else {
-        segments
+    let mut glosses = Vec::<String>::with_capacity(segments.len());
+    for segment in segments {
+        if let Some(previous) = glosses.last_mut()
+            && is_dependent_continuation(previous, &segment)
+        {
+            previous.push_str("; ");
+            previous.push_str(&segment);
+        } else {
+            glosses.push(segment);
+        }
     }
+    glosses
 }
 
 /// Avoids treating apostrophes in contractions as quotation delimiters.
@@ -492,48 +497,81 @@ fn begins_ascii_single_quote(value: &str, offset: usize) -> bool {
     boundary && value[offset + '\''.len_utf8()..].contains('\'')
 }
 
-/// Recognizes prose that continues an earlier gloss rather than naming another one.
-fn is_dependent_continuation(value: &str) -> bool {
+/// Recognizes high-confidence prose that continues an earlier gloss.
+///
+/// Common prepositions and words such as `used` and `until` are deliberately
+/// not sufficient on their own: Wiktionary also uses them at the start of
+/// independent translations (`used to`, `until the end`, and so on). The
+/// accepted forms below encode the surrounding syntax that makes continuation
+/// substantially more certain while leaving ambiguous alternatives split.
+fn is_dependent_continuation(previous: &str, value: &str) -> bool {
     let lower = value.trim_start().to_ascii_lowercase();
-    lower.starts_with(['(', '[', '{', ',', ':', '—', '–', '-'])
-        || [
-            "and ",
-            "or ",
-            "but ",
-            "also ",
-            "especially ",
-            "particularly ",
-            "chiefly ",
-            "usually ",
-            "often ",
-            "for ",
-            "with ",
-            "without ",
-            "by ",
-            "in ",
-            "on ",
-            "at ",
-            "from ",
-            "as ",
-            "when ",
-            "where ",
-            "which ",
-            "who ",
-            "that ",
-            "while ",
-            "if ",
-            "although ",
-            "including ",
-            "such as ",
-            "e.g.",
-            "i.e.",
-            "etc.",
-            "used ",
-            "until ",
-            "namely ",
-        ]
-        .iter()
-        .any(|prefix| lower.starts_with(prefix))
+    if lower.starts_with(['(', '[', '{', ',', ':', '—', '–', '-']) {
+        return true;
+    }
+
+    if [
+        "especially ",
+        "particularly ",
+        "chiefly ",
+        "usually ",
+        "often ",
+        "including ",
+        "such as ",
+        "e.g.",
+        "i.e.",
+        "etc.",
+        "also used ",
+    ]
+    .iter()
+    .any(|prefix| lower.starts_with(prefix))
+    {
+        return true;
+    }
+
+    if [
+        "used in ",
+        "used after ",
+        "used before ",
+        "used with ",
+        "used for ",
+        "used as ",
+        "used primarily ",
+        "used especially ",
+        "used to indicate ",
+        "used to mark ",
+        "used to express ",
+        "used to refer ",
+        "used to mean ",
+        "used other than ",
+    ]
+    .iter()
+    .any(|prefix| lower.starts_with(prefix))
+    {
+        return true;
+    }
+
+    if [
+        "until none ",
+        "until no ",
+        "until all ",
+        "until it ",
+        "until they ",
+        "until one ",
+        "until this ",
+        "until that ",
+    ]
+    .iter()
+    .any(|prefix| lower.starts_with(prefix))
+    {
+        return true;
+    }
+
+    lower.starts_with("namely ")
+        && previous
+            .trim_start()
+            .to_ascii_lowercase()
+            .starts_with("the ")
 }
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -1136,6 +1174,36 @@ mod tests {
         ] {
             assert_eq!(split_standalone_glosses(value), expected);
         }
+        for (value, expected) in [
+            (
+                "once; before; used to; in the past",
+                vec!["once", "before", "used to", "in the past"],
+            ),
+            (
+                "until the end; to the finish; until something is done",
+                vec!["until the end", "to the finish", "until something is done"],
+            ),
+        ] {
+            assert_eq!(split_standalone_glosses(value), expected);
+        }
+    }
+
+    #[test]
+    fn does_not_duplicate_examples_across_split_leaf_glosses() {
+        let json = entry_json(
+            r#"[{"glosses":["to test; to examine"],"examples":[{"type":"example","text":"通過測驗","english":"to pass a test","tags":["Traditional-Chinese"]},{"type":"example","text":"通过测验","english":"to pass a test","tags":["Simplified-Chinese"]}]}]"#,
+            r#"[{"zh_pron":"cèyàn","tags":["Mandarin","Pinyin"]}]"#,
+        );
+        let wrapper: Wrapper = serde_json::from_str(&json).unwrap();
+        let record = parse_entry(wrapper.raw, 7, &mut SourceReport::default()).unwrap();
+
+        assert_eq!(record.definitions.len(), 2);
+        assert_eq!(record.definitions[0].examples.len(), 1);
+        assert!(record.definitions[1].examples.is_empty());
+        assert_eq!(
+            record.definitions[0].examples[0].value.english.as_deref(),
+            Some("to pass a test")
+        );
     }
 
     #[test]

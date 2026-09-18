@@ -497,81 +497,148 @@ fn begins_ascii_single_quote(value: &str, offset: usize) -> bool {
     boundary && value[offset + '\''.len_utf8()..].contains('\'')
 }
 
-/// Recognizes high-confidence prose that continues an earlier gloss.
-///
-/// Common prepositions and words such as `used` and `until` are deliberately
-/// not sufficient on their own: Wiktionary also uses them at the start of
-/// independent translations (`used to`, `until the end`, and so on). The
-/// accepted forms below encode the surrounding syntax that makes continuation
-/// substantially more certain while leaving ambiguous alternatives split.
-fn is_dependent_continuation(previous: &str, value: &str) -> bool {
-    let lower = value.trim_start().to_ascii_lowercase();
-    if lower.starts_with(['(', '[', '{', ',', ':', '—', '–', '-']) {
-        return true;
-    }
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ContinuationRule {
+    Structural,
+    ExplicitDiscourse,
+    UsageFrame,
+    AnaphoricUntil,
+    ContextualNamely,
+}
 
-    if [
-        "especially ",
-        "particularly ",
-        "chiefly ",
-        "usually ",
-        "often ",
-        "including ",
-        "such as ",
+/// Resolves only closed-world, high-confidence continuation constructions.
+///
+/// Semicolon-separated text is otherwise an independent gloss by contract.
+/// In particular, this deliberately does not classify generic prepositions or
+/// an arbitrary first word as evidence that a segment continues the previous
+/// gloss.
+fn is_dependent_continuation(previous: &str, value: &str) -> bool {
+    continuation_rule(previous, value).is_some()
+}
+
+fn continuation_rule(previous: &str, value: &str) -> Option<ContinuationRule> {
+    let lower = value.trim_start().to_ascii_lowercase();
+    if is_structural_continuation(&lower) {
+        return Some(ContinuationRule::Structural);
+    }
+    if is_explicit_discourse_continuation(&lower) {
+        return Some(ContinuationRule::ExplicitDiscourse);
+    }
+    if is_usage_frame_continuation(&lower) {
+        return Some(ContinuationRule::UsageFrame);
+    }
+    if is_anaphoric_until_continuation(&lower) {
+        return Some(ContinuationRule::AnaphoricUntil);
+    }
+    if is_contextual_namely_continuation(previous, &lower) {
+        return Some(ContinuationRule::ContextualNamely);
+    }
+    None
+}
+
+/// Structural prose is attached when the segment opens with punctuation that
+/// cannot plausibly begin an independent translation gloss.
+fn is_structural_continuation(value: &str) -> bool {
+    value.starts_with(['(', '[', '{', ',', ':', '—', '–', '-'])
+}
+
+/// Explicit discourse relations are a reviewed vocabulary, not a prefix list.
+/// Every marker except `etc.` needs a nonempty complement. `etc.` is itself a
+/// complete continuation gloss, so its exact form remains attachable.
+fn is_explicit_discourse_continuation(value: &str) -> bool {
+    const MARKERS: &[&str] = &[
+        "by extension",
+        "in particular",
+        "especially",
+        "particularly",
+        "chiefly",
+        "usually",
+        "often",
+        "including",
+        "such as",
+        "also used",
         "e.g.",
         "i.e.",
         "etc.",
-        "also used ",
-    ]
-    .iter()
-    .any(|prefix| lower.starts_with(prefix))
-    {
-        return true;
-    }
+    ];
 
-    if [
-        "used in ",
-        "used after ",
-        "used before ",
-        "used with ",
-        "used for ",
-        "used as ",
-        "used primarily ",
-        "used especially ",
-        "used to indicate ",
-        "used to mark ",
-        "used to express ",
-        "used to refer ",
-        "used to mean ",
-        "used other than ",
-    ]
-    .iter()
-    .any(|prefix| lower.starts_with(prefix))
-    {
-        return true;
-    }
+    has_nonempty_marker_complement(value, MARKERS)
+        || marker_complement(value, "etc.")
+            .is_some_and(|complement| complement.is_empty() && value == "etc.")
+}
 
-    if [
-        "until none ",
-        "until no ",
-        "until all ",
-        "until it ",
-        "until they ",
-        "until one ",
-        "until this ",
-        "until that ",
-    ]
-    .iter()
-    .any(|prefix| lower.starts_with(prefix))
-    {
-        return true;
-    }
+/// Usage frames retain the narrow constructions that were already reviewed.
+fn is_usage_frame_continuation(value: &str) -> bool {
+    const MARKERS: &[&str] = &[
+        "used in",
+        "used after",
+        "used before",
+        "used with",
+        "used for",
+        "used as",
+        "used primarily",
+        "used especially",
+        "used to indicate",
+        "used to mark",
+        "used to express",
+        "used to refer",
+        "used to mean",
+        "used other than",
+    ];
 
-    lower.starts_with("namely ")
-        && previous
-            .trim_start()
-            .to_ascii_lowercase()
-            .starts_with("the ")
+    has_nonempty_marker_complement(value, MARKERS)
+}
+
+/// `until` is dependent only when its next word is an anaphoric determiner or
+/// pronoun and the construction has a following complement.
+fn is_anaphoric_until_continuation(value: &str) -> bool {
+    const MARKERS: &[&str] = &[
+        "until none",
+        "until no",
+        "until all",
+        "until it",
+        "until they",
+        "until one",
+        "until this",
+        "until that",
+    ];
+
+    has_nonempty_marker_complement(value, MARKERS)
+}
+
+/// `namely` remains dependent only in the existing list-introduction context.
+fn is_contextual_namely_continuation(previous: &str, value: &str) -> bool {
+    previous
+        .trim_start()
+        .to_ascii_lowercase()
+        .starts_with("the ")
+        && marker_complement(value, "namely").is_some_and(|complement| !complement.is_empty())
+}
+
+fn has_nonempty_marker_complement(value: &str, markers: &[&str]) -> bool {
+    markers.iter().any(|marker| {
+        marker_complement(value, marker).is_some_and(|complement| !complement.is_empty())
+    })
+}
+
+/// Returns the text after a complete marker, accepting a separator such as a
+/// comma or colon. An alphanumeric next character is a prefix collision, not
+/// a marker boundary (`particularly` must not match `particularlyish`).
+fn marker_complement<'a>(value: &'a str, marker: &str) -> Option<&'a str> {
+    let remainder = value.strip_prefix(marker)?;
+    let Some(first) = remainder.chars().next() else {
+        return Some("");
+    };
+    if first.is_alphanumeric() || first == '_' {
+        return None;
+    }
+    if first.is_whitespace() {
+        return Some(remainder.trim_start());
+    }
+    if first.is_ascii_punctuation() || matches!(first, '—' | '–') {
+        return Some(remainder[first.len_utf8()..].trim_start());
+    }
+    None
 }
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -1183,9 +1250,164 @@ mod tests {
                 "until the end; to the finish; until something is done",
                 vec!["until the end", "to the finish", "until something is done"],
             ),
+            (
+                "base; namely, an independent gloss",
+                vec!["base", "namely, an independent gloss"],
+            ),
         ] {
             assert_eq!(split_standalone_glosses(value), expected);
         }
+    }
+
+    #[test]
+    fn resolves_representative_wiktionary_continuations_without_rewriting_text() {
+        for (value, expected) in [
+            (
+                "the Milky Way; by extension, the sky",
+                vec!["the Milky Way; by extension, the sky"],
+            ),
+            (
+                "enlargement or lump in the abdomen; in particular, splenomegaly or hepatomegaly",
+                vec![
+                    "enlargement or lump in the abdomen; in particular, splenomegaly or hepatomegaly",
+                ],
+            ),
+            (
+                "enlargement or lump in the abdomen; in particular: splenomegaly",
+                vec!["enlargement or lump in the abdomen; in particular: splenomegaly"],
+            ),
+            (
+                "land vehicle; including car",
+                vec!["land vehicle; including car"],
+            ),
+            (
+                "field; open country; used in place names",
+                vec!["field", "open country; used in place names"],
+            ),
+            (
+                "Particle used after verbs to show exhaustion or completion; until none is left",
+                vec![
+                    "Particle used after verbs to show exhaustion or completion; until none is left",
+                ],
+            ),
+            (
+                "only used in 咖啡 (kāfēi); also used as its short form",
+                vec!["only used in 咖啡 (kāfēi); also used as its short form"],
+            ),
+        ] {
+            assert_eq!(split_standalone_glosses(value), expected);
+        }
+    }
+
+    #[test]
+    fn requires_explicit_continuation_evidence() {
+        for (value, expected) in [
+            (
+                "exceptionally; especially",
+                vec!["exceptionally", "especially"],
+            ),
+            ("BTW; by the way", vec!["BTW", "by the way"]),
+            ("by; with; by means of", vec!["by", "with", "by means of"]),
+            (
+                "to take for example; for example; for instance; such as",
+                vec![
+                    "to take for example",
+                    "for example",
+                    "for instance",
+                    "such as",
+                ],
+            ),
+            (
+                "once; before; used to; in the past",
+                vec!["once", "before", "used to", "in the past"],
+            ),
+            (
+                "until the end; to the finish; until something is done",
+                vec!["until the end", "to the finish", "until something is done"],
+            ),
+        ] {
+            assert_eq!(split_standalone_glosses(value), expected);
+        }
+        for value in [
+            "by the way",
+            "in the past",
+            "for example",
+            "with care",
+            "as usual",
+            "on foot",
+            "at once",
+            "from here",
+            "and more",
+            "or less",
+            "until the end",
+        ] {
+            assert_eq!(
+                split_standalone_glosses(&format!("base; {value}")),
+                vec!["base", value]
+            );
+        }
+    }
+
+    #[test]
+    fn rejects_bare_and_prefix_collision_markers() {
+        for (marker, collision) in [
+            ("by extension", "by extensionally"),
+            ("in particular", "in particularity"),
+            ("especially", "especiallyish"),
+            ("particularly", "particularlyish"),
+            ("chiefly", "chieflyness"),
+            ("usually", "usuallyish"),
+            ("often", "oftenly"),
+            ("including", "includingly"),
+            ("such as", "such asfoo"),
+            ("also used", "also usedly"),
+            ("e.g.", "e.g.foo"),
+            ("i.e.", "i.e.foo"),
+            ("used in", "used inside"),
+            ("used after", "used afterward"),
+            ("until none", "until nonex"),
+            ("until they", "until theyself"),
+            ("namely", "namelything"),
+        ] {
+            assert_eq!(
+                split_standalone_glosses(&format!("base; {marker}")),
+                vec!["base", marker]
+            );
+            assert_eq!(
+                split_standalone_glosses(&format!("base; {collision}")),
+                vec!["base", collision]
+            );
+        }
+        assert_eq!(split_standalone_glosses("base; etc."), vec!["base; etc."]);
+        assert_eq!(
+            split_standalone_glosses("base; etcetera"),
+            vec!["base", "etcetera"]
+        );
+    }
+
+    #[test]
+    fn classifies_continuation_rule_families() {
+        assert_eq!(
+            continuation_rule("base", "(an aside)"),
+            Some(ContinuationRule::Structural)
+        );
+        assert_eq!(
+            continuation_rule("base", "BY EXTENSION, the sky"),
+            Some(ContinuationRule::ExplicitDiscourse)
+        );
+        assert_eq!(
+            continuation_rule("base", "used in place names"),
+            Some(ContinuationRule::UsageFrame)
+        );
+        assert_eq!(
+            continuation_rule("base", "until they leave"),
+            Some(ContinuationRule::AnaphoricUntil)
+        );
+        assert_eq!(
+            continuation_rule("the divisions", "namely: A and B"),
+            Some(ContinuationRule::ContextualNamely)
+        );
+        assert_eq!(continuation_rule("base", "by the way"), None);
     }
 
     #[test]

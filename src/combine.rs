@@ -2,7 +2,7 @@
 
 use crate::model::{
     AlternativePronunciation, Definition, HskLevel, HskLevels, LexicalId, LexicalUnit,
-    MeasureWordReference, Source, Sourced,
+    MeasureWordReference, Qualifier, Source, Sourced,
 };
 use crate::sources::{BuildReport, ParsedRecord};
 use anyhow::{Result, bail};
@@ -280,7 +280,7 @@ fn enrich_from_chinese_notes(
         let mut changed = false;
         changed |= merge_values(&mut target.parts_of_speech, incoming.parts_of_speech);
         changed |= merge_values(&mut target.lexical_kinds, incoming.lexical_kinds);
-        changed |= merge_values(
+        changed |= merge_qualifiers(
             &mut target.qualifiers,
             incoming
                 .qualifiers
@@ -383,7 +383,7 @@ fn merge_definition(existing: &mut Definition, mut incoming: Definition) {
     merge_sources(&mut existing.gloss.sources, incoming.gloss.sources);
     merge_values(&mut existing.examples, incoming.examples);
     merge_values(&mut existing.commentary, incoming.commentary);
-    merge_values(&mut existing.qualifiers, incoming.qualifiers);
+    merge_qualifiers(&mut existing.qualifiers, incoming.qualifiers);
     merge_values(&mut existing.lexical_kinds, incoming.lexical_kinds);
     merge_values(&mut existing.parts_of_speech, incoming.parts_of_speech);
     merge_alternative_pronunciations(
@@ -397,7 +397,7 @@ fn merge_definition(existing: &mut Definition, mut incoming: Definition) {
 fn deduplicate_definition_metadata(definition: &mut Definition) {
     deduplicate_values(&mut definition.examples);
     deduplicate_values(&mut definition.commentary);
-    deduplicate_values(&mut definition.qualifiers);
+    deduplicate_qualifiers(&mut definition.qualifiers);
     deduplicate_values(&mut definition.lexical_kinds);
     deduplicate_values(&mut definition.parts_of_speech);
     deduplicate_alternative_pronunciations(&mut definition.alternative_pronunciations);
@@ -508,6 +508,13 @@ fn deduplicate_values<T: Eq>(values: &mut Vec<Sourced<T>>) {
     merge_values(values, incoming);
 }
 
+/// Deduplicates qualifiers by category and case-insensitive value, retaining
+/// the first-seen spelling while aggregating source attribution.
+fn deduplicate_qualifiers(values: &mut Vec<Sourced<Qualifier>>) {
+    let incoming = std::mem::take(values);
+    merge_qualifiers(values, incoming);
+}
+
 /// Deduplicates pronunciation values by canonical Pinyin rather than by display label.
 fn deduplicate_alternative_pronunciations(values: &mut Vec<Sourced<AlternativePronunciation>>) {
     let incoming = std::mem::take(values);
@@ -562,6 +569,27 @@ fn merge_values<T: Eq>(existing: &mut Vec<Sourced<T>>, incoming: Vec<Sourced<T>>
             .iter_mut()
             .find(|existing_value| existing_value.value == incoming_value.value)
         {
+            changed |= merge_sources(&mut existing_value.sources, incoming_value.sources);
+        } else {
+            existing.push(incoming_value);
+            changed = true;
+        }
+    }
+    changed
+}
+
+/// Merges qualifiers using a lowercase comparison for their written values.
+fn merge_qualifiers(
+    existing: &mut Vec<Sourced<Qualifier>>,
+    incoming: Vec<Sourced<Qualifier>>,
+) -> bool {
+    let mut changed = false;
+    for incoming_value in incoming {
+        let incoming_lowercase = incoming_value.value.value.to_lowercase();
+        if let Some(existing_value) = existing.iter_mut().find(|existing_value| {
+            existing_value.value.category == incoming_value.value.category
+                && existing_value.value.value.to_lowercase() == incoming_lowercase
+        }) {
             changed |= merge_sources(&mut existing_value.sources, incoming_value.sources);
         } else {
             existing.push(incoming_value);
@@ -627,7 +655,10 @@ const fn source_rank(source: Source) -> u8 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{AlternativePronunciation, ChineseVariety, Example, PartOfSpeech, Source};
+    use crate::model::{
+        AlternativePronunciation, ChineseVariety, Example, PartOfSpeech, Qualifier,
+        QualifierCategory, Source,
+    };
     use crate::pinyin::from_numbered;
     use crate::sources::ParsedPronunciation;
 
@@ -889,6 +920,36 @@ mod tests {
         assert_eq!(
             units[0].english[0].examples[0].sources,
             vec![Source::Wiktionary]
+        );
+    }
+
+    #[test]
+    fn qualifiers_are_deduplicated_by_lowercase_value() {
+        let mut cedict = record(Source::CcCedict, "yan1 huo3", "fireworks");
+        cedict.definitions[0].qualifiers.push(Sourced::one(
+            Qualifier {
+                category: QualifierCategory::Domain,
+                value: "Medicine".to_owned(),
+            },
+            Source::CcCedict,
+        ));
+        let mut wiktionary = record(Source::Wiktionary, "yan1 huo3", "fireworks");
+        wiktionary.definitions[0].qualifiers.push(Sourced::one(
+            Qualifier {
+                category: QualifierCategory::Domain,
+                value: "medicine".to_owned(),
+            },
+            Source::Wiktionary,
+        ));
+
+        let units = combine(vec![cedict, wiktionary], &mut BuildReport::default()).unwrap();
+        let qualifiers = &units[0].english[0].qualifiers;
+
+        assert_eq!(qualifiers.len(), 1);
+        assert_eq!(qualifiers[0].value.value, "Medicine");
+        assert_eq!(
+            qualifiers[0].sources,
+            vec![Source::CcCedict, Source::Wiktionary]
         );
     }
 

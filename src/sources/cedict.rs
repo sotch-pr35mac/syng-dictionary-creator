@@ -2,8 +2,8 @@
 
 use super::{ParsedPronunciation, ParsedRecord, SourceReport, rejected_record};
 use crate::model::{
-    AlternativePronunciation, Definition, LexicalId, LexicalKind, Qualifier, QualifierCategory,
-    Source, Sourced, normalize_headword, normalize_text,
+    AlternativePronunciation, ChineseVariety, Definition, LexicalKind, MeasureWordReference,
+    Qualifier, QualifierCategory, Source, Sourced, normalize_headword, normalize_text,
 };
 use crate::pinyin::from_numbered;
 use anyhow::{Context, Result, bail};
@@ -167,8 +167,13 @@ fn all_alternative_markers_matched(value: &str) -> bool {
     })
 }
 
-/// Resolves a comma-delimited `CL:` annotation into stable classifier identities.
-fn parse_classifiers(value: &str, source: Source) -> Result<Vec<Sourced<LexicalId>>> {
+/// Parses a comma-delimited `CL:` annotation into classifier display references.
+///
+/// CC-CEDICT gives a Mandarin Pinyin reading, which is validated here, but a
+/// classifier only receives an identity after all source records are admitted.
+/// This prevents a Pinyin-specific guess when multiple current lexical units
+/// share the same traditional and simplified forms.
+fn parse_classifiers(value: &str, source: Source) -> Result<Vec<Sourced<MeasureWordReference>>> {
     let mut results = Vec::new();
     for raw_classifier in value.split(',') {
         let raw_classifier = raw_classifier.trim();
@@ -183,16 +188,26 @@ fn parse_classifiers(value: &str, source: Source) -> Result<Vec<Sourced<LexicalI
             bail!("malformed-classifier:{raw_classifier}");
         }
         let forms = &raw_classifier[..open];
-        let pronunciation = from_numbered(&raw_classifier[open + 1..close])
+        let _pronunciation = from_numbered(&raw_classifier[open + 1..close])
             .with_context(|| format!("malformed-classifier-pinyin:{raw_classifier}"))?;
         let (traditional, simplified) = forms
             .split_once('|')
             .map_or((forms, forms), |(traditional, simplified)| {
                 (traditional, simplified)
             });
-        let lexical_id = LexicalId::new(simplified, traditional, &pronunciation.numbers)
+        let traditional = normalize_headword(traditional)
             .with_context(|| format!("malformed-classifier-headword:{raw_classifier}"))?;
-        results.push(Sourced::one(lexical_id, source));
+        let simplified = normalize_headword(simplified)
+            .with_context(|| format!("malformed-classifier-headword:{raw_classifier}"))?;
+        results.push(Sourced::one(
+            MeasureWordReference {
+                traditional,
+                simplified,
+                lexical_id: None,
+                varieties: vec![ChineseVariety::Mandarin],
+            },
+            source,
+        ));
     }
     Ok(results)
 }
@@ -299,6 +314,11 @@ mod tests {
         .unwrap();
         assert_eq!(record.definitions[0].gloss.value, "experience");
         assert_eq!(record.definitions[0].measure_words.len(), 2);
+        let classifier = &record.definitions[0].measure_words[0].value;
+        assert_eq!(classifier.traditional, "段");
+        assert_eq!(classifier.simplified, "段");
+        assert_eq!(classifier.lexical_id, None);
+        assert_eq!(classifier.varieties, vec![ChineseVariety::Mandarin]);
         assert_eq!(record.definitions[1].gloss.value, "to experience");
 
         let record = parse_line("和 和 [[he2]] /and; together with/", 2).unwrap();

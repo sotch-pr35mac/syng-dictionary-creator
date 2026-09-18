@@ -1,8 +1,8 @@
 //! Deterministic source-ordered admission and cross-source combination.
 
 use crate::model::{
-    AlternativePronunciation, Definition, HskLevel, HskLevels, LexicalId, LexicalUnit, Source,
-    Sourced,
+    AlternativePronunciation, Definition, HskLevel, HskLevels, LexicalId, LexicalUnit,
+    MeasureWordReference, Source, Sourced,
 };
 use crate::sources::{BuildReport, ParsedRecord};
 use anyhow::{Result, bail};
@@ -55,6 +55,8 @@ pub(crate) fn combine(
         builder.unit.hsk = hsk_levels(&builder.unit.simplified, &builder.unit.pinyin.numbers);
         lexical_units.push(builder.unit);
     }
+    aggregate_measure_word_references(&mut lexical_units);
+    resolve_measure_word_references(&mut lexical_units);
     lexical_units.sort_by(|left, right| left.id.cmp(&right.id));
     report.lexical_units = lexical_units.len() as u64;
     report.definitions = lexical_units
@@ -336,7 +338,7 @@ fn merge_record(builder: &mut UnitBuilder, record: ParsedRecord, report: &mut Bu
         &mut builder.unit.alternative_pronunciations,
         record.alternative_pronunciations,
     );
-    merge_values(&mut builder.unit.measure_words, record.measure_words);
+    merge_measure_words(&mut builder.unit.measure_words, record.measure_words);
     if !builder.unit.alternative_pronunciations.is_empty() || !builder.unit.measure_words.is_empty()
     {
         published_anything = true;
@@ -388,7 +390,7 @@ fn merge_definition(existing: &mut Definition, mut incoming: Definition) {
         &mut existing.alternative_pronunciations,
         incoming.alternative_pronunciations,
     );
-    merge_values(&mut existing.measure_words, incoming.measure_words);
+    merge_measure_words(&mut existing.measure_words, incoming.measure_words);
 }
 
 /// Collapses metadata that becomes identical after source-specific normalization.
@@ -399,7 +401,105 @@ fn deduplicate_definition_metadata(definition: &mut Definition) {
     deduplicate_values(&mut definition.lexical_kinds);
     deduplicate_values(&mut definition.parts_of_speech);
     deduplicate_alternative_pronunciations(&mut definition.alternative_pronunciations);
-    deduplicate_values(&mut definition.measure_words);
+    deduplicate_measure_words(&mut definition.measure_words);
+}
+
+/// Unifies source evidence for the same written classifier while retaining all
+/// reviewed varieties. Identities are re-resolved after complete admission.
+fn merge_measure_words(
+    existing: &mut Vec<Sourced<MeasureWordReference>>,
+    incoming: Vec<Sourced<MeasureWordReference>>,
+) -> bool {
+    let mut changed = false;
+    for incoming_value in incoming {
+        if let Some(existing_value) = existing.iter_mut().find(|existing_value| {
+            existing_value.value.traditional == incoming_value.value.traditional
+                && existing_value.value.simplified == incoming_value.value.simplified
+        }) {
+            for variety in incoming_value.value.varieties {
+                if !existing_value.value.varieties.contains(&variety) {
+                    existing_value.value.varieties.push(variety);
+                    changed = true;
+                }
+            }
+            match (
+                &existing_value.value.lexical_id,
+                incoming_value.value.lexical_id,
+            ) {
+                (None, Some(identity)) => {
+                    existing_value.value.lexical_id = Some(identity);
+                    changed = true;
+                }
+                (Some(existing_identity), Some(incoming_identity))
+                    if *existing_identity != incoming_identity =>
+                {
+                    existing_value.value.lexical_id = None;
+                    changed = true;
+                }
+                _ => {}
+            }
+            changed |= merge_sources(&mut existing_value.sources, incoming_value.sources);
+        } else {
+            existing.push(incoming_value);
+            changed = true;
+        }
+    }
+    changed
+}
+
+/// Deduplicates classifier references using their written forms as the key.
+fn deduplicate_measure_words(values: &mut Vec<Sourced<MeasureWordReference>>) {
+    let incoming = std::mem::take(values);
+    merge_measure_words(values, incoming);
+}
+
+/// Builds the canonical entry-level classifier list from every scoped reference.
+///
+/// Measure Words is entry-wide in the shipped schema. Moving each scoped source
+/// annotation here guarantees consumers receive one normalized list rather than
+/// repeated copies across split glosses. Written forms remain the key; varieties
+/// and source attribution are merged in first-seen order.
+fn aggregate_measure_word_references(units: &mut [LexicalUnit]) {
+    for unit in units {
+        let mut display_references = std::mem::take(&mut unit.measure_words);
+        for definition in &mut unit.english {
+            let scoped_references = std::mem::take(&mut definition.measure_words);
+            merge_measure_words(&mut display_references, scoped_references);
+        }
+        unit.measure_words = display_references;
+    }
+}
+
+/// Assigns an identity only when exactly one current unit has both classifier forms.
+fn resolve_measure_word_references(units: &mut [LexicalUnit]) {
+    let mut identities = BTreeMap::<(String, String), Vec<LexicalId>>::new();
+    for unit in units.iter() {
+        identities
+            .entry((unit.traditional.clone(), unit.simplified.clone()))
+            .or_default()
+            .push(unit.id.clone());
+    }
+    for unit in units.iter_mut() {
+        resolve_measure_word_list(&mut unit.measure_words, &identities);
+        for definition in &mut unit.english {
+            resolve_measure_word_list(&mut definition.measure_words, &identities);
+        }
+    }
+}
+
+fn resolve_measure_word_list(
+    values: &mut [Sourced<MeasureWordReference>],
+    identities: &BTreeMap<(String, String), Vec<LexicalId>>,
+) {
+    for value in values {
+        let matches = identities.get(&(
+            value.value.traditional.clone(),
+            value.value.simplified.clone(),
+        ));
+        value.value.lexical_id = matches
+            .filter(|candidates| candidates.len() == 1)
+            .map(|candidates| candidates[0].clone());
+    }
 }
 
 /// Deduplicates one already-collected attributed value list without changing first-seen order.
@@ -527,7 +627,7 @@ const fn source_rank(source: Source) -> u8 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{AlternativePronunciation, Example, PartOfSpeech, Source};
+    use crate::model::{AlternativePronunciation, ChineseVariety, Example, PartOfSpeech, Source};
     use crate::pinyin::from_numbered;
     use crate::sources::ParsedPronunciation;
 
@@ -548,6 +648,113 @@ mod tests {
             measure_words: Vec::new(),
             rejection: None,
         }
+    }
+
+    fn lexical_unit(simplified: &str, traditional: &str, numbered_pinyin: &str) -> LexicalUnit {
+        let pinyin = from_numbered(numbered_pinyin).unwrap();
+        LexicalUnit {
+            id: LexicalId::new(simplified, traditional, &pinyin.numbers).unwrap(),
+            simplified: simplified.to_owned(),
+            traditional: traditional.to_owned(),
+            pinyin,
+            commonness: 0.0,
+            alternative_pronunciations: Vec::new(),
+            measure_words: Vec::new(),
+            hsk: HskLevels::default(),
+            english: vec![Definition::new("fixture".to_owned(), Source::CcCedict)],
+        }
+    }
+
+    fn measure_word_reference(
+        traditional: &str,
+        simplified: &str,
+    ) -> Sourced<MeasureWordReference> {
+        Sourced::one(
+            MeasureWordReference {
+                traditional: traditional.to_owned(),
+                simplified: simplified.to_owned(),
+                lexical_id: None,
+                varieties: Vec::new(),
+            },
+            Source::Wiktionary,
+        )
+    }
+
+    #[test]
+    fn canonicalizes_duplicate_scoped_classifier_references_at_the_entry_level() {
+        let mut unit = lexical_unit("考", "考", "kao3");
+        let mut entry_reference = measure_word_reference("次", "次");
+        entry_reference
+            .value
+            .varieties
+            .push(ChineseVariety::Mandarin);
+        entry_reference.sources = vec![Source::CcCedict];
+        unit.measure_words.push(entry_reference);
+
+        let mut scoped_reference = measure_word_reference("次", "次");
+        scoped_reference
+            .value
+            .varieties
+            .push(ChineseVariety::Cantonese);
+        unit.english[0].measure_words.push(scoped_reference);
+        unit.english[0]
+            .measure_words
+            .push(measure_word_reference("個", "个"));
+
+        let mut units = vec![unit];
+        aggregate_measure_word_references(&mut units);
+
+        assert!(
+            units[0]
+                .english
+                .iter()
+                .all(|definition| definition.measure_words.is_empty())
+        );
+        assert_eq!(units[0].measure_words.len(), 2);
+        assert_eq!(
+            units[0].measure_words[0].value.varieties,
+            vec![ChineseVariety::Mandarin, ChineseVariety::Cantonese]
+        );
+        assert_eq!(
+            units[0].measure_words[0].sources,
+            vec![Source::CcCedict, Source::Wiktionary]
+        );
+    }
+
+    #[test]
+    fn resolves_only_unique_exact_classifier_reference_forms() {
+        let mut unique_owner = lexical_unit("物", "物", "wu4");
+        unique_owner
+            .measure_words
+            .push(measure_word_reference("樖", "樖"));
+        let unique_target = lexical_unit("樖", "樖", "ke1");
+        let unique_target_id = unique_target.id.clone();
+        let mut unique_units = vec![unique_owner, unique_target];
+        resolve_measure_word_references(&mut unique_units);
+        assert_eq!(
+            unique_units[0].measure_words[0].value.lexical_id,
+            Some(unique_target_id)
+        );
+
+        let mut ambiguous_owner = lexical_unit("物", "物", "wu4");
+        ambiguous_owner
+            .measure_words
+            .push(measure_word_reference("樖", "樖"));
+        let mut ambiguous_units = vec![
+            ambiguous_owner,
+            lexical_unit("樖", "樖", "ke1"),
+            lexical_unit("樖", "樖", "ke4"),
+        ];
+        resolve_measure_word_references(&mut ambiguous_units);
+        assert_eq!(ambiguous_units[0].measure_words[0].value.lexical_id, None);
+
+        let mut missing_owner = lexical_unit("物", "物", "wu4");
+        missing_owner
+            .measure_words
+            .push(measure_word_reference("缺", "缺"));
+        let mut missing_units = vec![missing_owner];
+        resolve_measure_word_references(&mut missing_units);
+        assert_eq!(missing_units[0].measure_words[0].value.lexical_id, None);
     }
 
     #[test]

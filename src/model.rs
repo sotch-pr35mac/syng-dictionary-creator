@@ -471,6 +471,100 @@ pub enum PartOfSpeech {
     Verb,
 }
 
+/// Reviewed Chinese varieties attached to a classifier reference.
+///
+/// These names deliberately describe the classifier's usage, not the
+/// pronunciation or identity of the lexical unit it may link to.
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    Eq,
+    Hash,
+    Ord,
+    PartialEq,
+    PartialOrd,
+    Serialize,
+    Deserialize,
+    rkyv::Archive,
+    rkyv::Serialize,
+    rkyv::Deserialize,
+)]
+#[serde(rename_all = "kebab-case")]
+pub enum ChineseVariety {
+    /// Mandarin Chinese.
+    Mandarin,
+    /// Sichuanese Mandarin.
+    Sichuanese,
+    /// Dungan.
+    Dungan,
+    /// Cantonese.
+    Cantonese,
+    /// Taishanese.
+    Taishanese,
+    /// Gan Chinese.
+    Gan,
+    /// Hakka Chinese.
+    Hakka,
+    /// Jin Chinese.
+    Jin,
+    /// Northern Min.
+    NorthernMin,
+    /// Eastern Min.
+    EasternMin,
+    /// Middle Chinese.
+    MiddleChinese,
+    /// Hokkien.
+    Hokkien,
+    /// Teochew.
+    Teochew,
+    /// Leizhou Min.
+    LeizhouMin,
+    /// Puxian Min.
+    PuxianMin,
+    /// Southern Pinghua.
+    SouthernPinghua,
+    /// Wu Chinese.
+    Wu,
+    /// Xiang Chinese.
+    Xiang,
+    /// Loudi Xiang.
+    LoudiXiang,
+    /// Hengyang Xiang.
+    HengyangXiang,
+    /// Old Chinese.
+    OldChinese,
+}
+
+/// Chinese display forms and optional current lexical identity for a classifier.
+///
+/// A missing identity means the text had no unique exact match in the completed
+/// dictionary; consumers can still search the two written forms.
+#[derive(
+    Clone,
+    Debug,
+    Eq,
+    Hash,
+    Ord,
+    PartialEq,
+    PartialOrd,
+    Serialize,
+    Deserialize,
+    rkyv::Archive,
+    rkyv::Serialize,
+    rkyv::Deserialize,
+)]
+pub struct MeasureWordReference {
+    /// Traditional Chinese classifier form.
+    pub traditional: String,
+    /// Simplified Chinese classifier form.
+    pub simplified: String,
+    /// Stable identity only when exactly one current lexical unit has these forms.
+    pub lexical_id: Option<LexicalId>,
+    /// Reviewed varieties in which this classifier applies.
+    pub varieties: Vec<ChineseVariety>,
+}
+
 /// One ordered English definition and its independently attributed metadata.
 #[derive(
     Clone,
@@ -497,8 +591,8 @@ pub struct Definition {
     pub parts_of_speech: Vec<Sourced<PartOfSpeech>>,
     /// Pronunciations scoped to this definition.
     pub alternative_pronunciations: Vec<Sourced<AlternativePronunciation>>,
-    /// Classifier identities scoped to this definition.
-    pub measure_words: Vec<Sourced<LexicalId>>,
+    /// Classifier references scoped to this definition.
+    pub measure_words: Vec<Sourced<MeasureWordReference>>,
 }
 
 impl Definition {
@@ -593,8 +687,8 @@ pub struct LexicalUnit {
     pub commonness: f32,
     /// Entity-scoped pronunciation variants without their own lexical entity.
     pub alternative_pronunciations: Vec<Sourced<AlternativePronunciation>>,
-    /// Entity-scoped classifier identities.
-    pub measure_words: Vec<Sourced<LexicalId>>,
+    /// Entity-scoped classifier references.
+    pub measure_words: Vec<Sourced<MeasureWordReference>>,
     /// HSK proficiency memberships.
     pub hsk: HskLevels,
     /// Ordered English definitions.

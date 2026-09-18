@@ -2,8 +2,8 @@
 
 use super::{ParsedPronunciation, ParsedRecord, SourceReport, rejected_record};
 use crate::model::{
-    Definition, Example, LexicalKind, PartOfSpeech, Qualifier, QualifierCategory, Source, Sourced,
-    normalize_headword, normalize_text,
+    ChineseVariety, Definition, Example, LexicalKind, MeasureWordReference, PartOfSpeech,
+    Qualifier, QualifierCategory, Source, Sourced, normalize_headword, normalize_text,
 };
 use crate::pinyin::{from_marked, han_character_count};
 use anyhow::{Context, Result, bail};
@@ -193,6 +193,7 @@ fn parse_entry(
         .collect::<Vec<_>>();
 
     let mut definitions = Vec::new();
+    let mut measure_words = Vec::new();
     for sense in entry.senses {
         if explicitly_non_mandarin(&sense.tags) {
             report.diagnose("excluded-non-mandarin-sense");
@@ -202,44 +203,50 @@ fn parse_entry(
             report.diagnose("sense-without-gloss");
             continue;
         };
-        let leaf = normalize_text(leaf);
-        if leaf.is_empty() {
+        let parsed_gloss = parse_leaf_gloss(leaf, report);
+        if parsed_gloss.glosses.is_empty() {
             report.diagnose("empty-leaf-gloss");
             continue;
         }
-        let mut definition = Definition::new(leaf, Source::Wiktionary);
-        if let Some(value) = part_of_speech {
-            definition
-                .parts_of_speech
-                .push(Sourced::one(value, Source::Wiktionary));
-        }
-        if let Some(value) = lexical_kind {
-            definition
-                .lexical_kinds
-                .push(Sourced::one(value, Source::Wiktionary));
-        }
-        for topic in sense.topics {
-            if reviewed_topic(&topic) {
-                definition.qualifiers.push(Sourced::one(
-                    Qualifier {
-                        category: QualifierCategory::Domain,
-                        value: topic,
-                    },
-                    Source::Wiktionary,
-                ));
-            } else {
-                report.diagnose("unmapped-topic");
-            }
-        }
-        for tag in sense.tags {
-            if let Some(qualifier) = map_tag(&tag) {
+        merge_measure_word_references(&mut measure_words, parsed_gloss.measure_words);
+        let examples = parse_examples(sense.examples, report);
+        let qualifiers = sense
+            .topics
+            .iter()
+            .filter_map(|topic| {
+                if reviewed_topic(topic) {
+                    Some(Sourced::one(
+                        Qualifier {
+                            category: QualifierCategory::Domain,
+                            value: topic.clone(),
+                        },
+                        Source::Wiktionary,
+                    ))
+                } else {
+                    report.diagnose("unmapped-topic");
+                    None
+                }
+            })
+            .chain(sense.tags.iter().filter_map(|tag| {
+                map_tag(tag).map(|qualifier| Sourced::one(qualifier, Source::Wiktionary))
+            }))
+            .collect::<Vec<_>>();
+        for gloss in parsed_gloss.glosses {
+            let mut definition = Definition::new(gloss, Source::Wiktionary);
+            if let Some(value) = part_of_speech {
                 definition
-                    .qualifiers
-                    .push(Sourced::one(qualifier, Source::Wiktionary));
+                    .parts_of_speech
+                    .push(Sourced::one(value, Source::Wiktionary));
             }
+            if let Some(value) = lexical_kind {
+                definition
+                    .lexical_kinds
+                    .push(Sourced::one(value, Source::Wiktionary));
+            }
+            definition.qualifiers = qualifiers.clone();
+            definition.examples = examples.clone();
+            definitions.push(definition);
         }
-        definition.examples = parse_examples(sense.examples, report);
-        definitions.push(definition);
     }
     if definitions.is_empty() {
         bail!("no-publishable-mandarin-definitions");
@@ -263,9 +270,267 @@ fn parse_entry(
         pronunciations,
         definitions,
         alternative_pronunciations: Vec::new(),
-        measure_words: Vec::new(),
+        measure_words,
         rejection: None,
     })
+}
+
+struct ParsedWiktionaryGloss {
+    glosses: Vec<String>,
+    measure_words: Vec<Sourced<MeasureWordReference>>,
+}
+
+/// Classifiers qualify the headword rather than one split English alternative.
+/// Normalize duplicate source annotations before they enter the entry-wide list.
+fn merge_measure_word_references(
+    existing: &mut Vec<Sourced<MeasureWordReference>>,
+    incoming: Vec<Sourced<MeasureWordReference>>,
+) {
+    for incoming_reference in incoming {
+        let matching_reference = existing.iter_mut().find(|existing_reference| {
+            existing_reference.value.traditional == incoming_reference.value.traditional
+                && existing_reference.value.simplified == incoming_reference.value.simplified
+        });
+        let Some(existing_reference) = matching_reference else {
+            existing.push(incoming_reference);
+            continue;
+        };
+
+        for incoming_variety in incoming_reference.value.varieties {
+            if !existing_reference
+                .value
+                .varieties
+                .contains(&incoming_variety)
+            {
+                existing_reference.value.varieties.push(incoming_variety);
+            }
+        }
+        for incoming_source in incoming_reference.sources {
+            if !existing_reference.sources.contains(&incoming_source) {
+                existing_reference.sources.push(incoming_source);
+            }
+        }
+    }
+}
+
+/// Removes one standard terminal classifier annotation before normalizing a leaf.
+///
+/// Invalid annotations deliberately remain literal gloss text. That is safer
+/// than silently erasing source prose or publishing a partly parsed classifier.
+fn parse_leaf_gloss(value: &str, report: &mut SourceReport) -> ParsedWiktionaryGloss {
+    let normalized = normalize_text(value);
+    if normalized.is_empty() {
+        return ParsedWiktionaryGloss {
+            glosses: Vec::new(),
+            measure_words: Vec::new(),
+        };
+    }
+    let Some(without_close) = normalized.strip_suffix(')') else {
+        return ParsedWiktionaryGloss {
+            glosses: split_standalone_glosses(&normalized),
+            measure_words: Vec::new(),
+        };
+    };
+    let Some(annotation_start) = without_close.rfind("(Classifier:") else {
+        return ParsedWiktionaryGloss {
+            glosses: split_standalone_glosses(&normalized),
+            measure_words: Vec::new(),
+        };
+    };
+    let gloss = normalize_text(&without_close[..annotation_start]);
+    let annotation = &without_close[annotation_start + "(Classifier:".len()..];
+    if gloss.is_empty() || annotation.contains(['(', ')']) {
+        report.diagnose("malformed-classifier-annotation");
+        return ParsedWiktionaryGloss {
+            glosses: vec![normalized],
+            measure_words: Vec::new(),
+        };
+    }
+    match parse_wiktionary_classifiers(annotation) {
+        Ok(measure_words) => ParsedWiktionaryGloss {
+            glosses: split_standalone_glosses(&gloss),
+            measure_words,
+        },
+        Err(()) => {
+            report.diagnose("malformed-classifier-annotation");
+            ParsedWiktionaryGloss {
+                glosses: vec![normalized],
+                measure_words: Vec::new(),
+            }
+        }
+    }
+}
+
+/// Parses the semicolon-delimited contents of Wiktionary's `Classifier:` item.
+fn parse_wiktionary_classifiers(
+    value: &str,
+) -> std::result::Result<Vec<Sourced<MeasureWordReference>>, ()> {
+    let mut references = Vec::new();
+    for raw_reference in value.split(';') {
+        let mut fields = raw_reference.split_whitespace();
+        let Some(forms) = fields.next() else {
+            return Err(());
+        };
+        let (traditional, simplified) = forms
+            .split_once('／')
+            .or_else(|| forms.split_once('/'))
+            .map_or((forms, forms), |(traditional, simplified)| {
+                (traditional, simplified)
+            });
+        let traditional = normalize_headword(traditional).map_err(|_| ())?;
+        let simplified = normalize_headword(simplified).map_err(|_| ())?;
+        let mut varieties = Vec::new();
+        for raw_variety in fields {
+            let variety = classifier_variety(raw_variety).ok_or(())?;
+            if !varieties.contains(&variety) {
+                varieties.push(variety);
+            }
+        }
+        references.push(Sourced::one(
+            MeasureWordReference {
+                traditional,
+                simplified,
+                lexical_id: None,
+                varieties,
+            },
+            Source::Wiktionary,
+        ));
+    }
+    (!references.is_empty()).then_some(references).ok_or(())
+}
+
+/// Maps only the reviewed `Module:zh-pron` abbreviations used by `zh-mw`.
+fn classifier_variety(value: &str) -> Option<ChineseVariety> {
+    Some(match value {
+        "m" | "m-x" | "m-nj" => ChineseVariety::Mandarin,
+        "m-s" => ChineseVariety::Sichuanese,
+        "dg" => ChineseVariety::Dungan,
+        "c" | "c-dg" | "c-yj" => ChineseVariety::Cantonese,
+        "c-t" => ChineseVariety::Taishanese,
+        "g" => ChineseVariety::Gan,
+        "h" => ChineseVariety::Hakka,
+        "j" => ChineseVariety::Jin,
+        "mb" => ChineseVariety::NorthernMin,
+        "mc" => ChineseVariety::MiddleChinese,
+        "md" => ChineseVariety::EasternMin,
+        "mn" => ChineseVariety::Hokkien,
+        "mn-l" => ChineseVariety::LeizhouMin,
+        "mn-t" => ChineseVariety::Teochew,
+        "oc" => ChineseVariety::OldChinese,
+        "px" => ChineseVariety::PuxianMin,
+        "sp" => ChineseVariety::SouthernPinghua,
+        "w" | "w-j" => ChineseVariety::Wu,
+        "x" => ChineseVariety::Xiang,
+        "x-l" => ChineseVariety::LoudiXiang,
+        "x-h" => ChineseVariety::HengyangXiang,
+        _ => return None,
+    })
+}
+
+/// Splits only independent top-level semicolon alternatives in a leaf gloss.
+fn split_standalone_glosses(value: &str) -> Vec<String> {
+    let mut boundaries = Vec::new();
+    let mut parentheses = 0_u32;
+    let mut brackets = 0_u32;
+    let mut braces = 0_u32;
+    let mut quote_end = None;
+    for (offset, character) in value.char_indices() {
+        if let Some(expected_end) = quote_end {
+            if character == expected_end {
+                quote_end = None;
+            }
+            continue;
+        }
+        match character {
+            '"' => quote_end = Some('"'),
+            '“' => quote_end = Some('”'),
+            '‘' => quote_end = Some('’'),
+            '\'' if begins_ascii_single_quote(value, offset) => quote_end = Some('\''),
+            '(' => parentheses += 1,
+            ')' => parentheses = parentheses.saturating_sub(1),
+            '[' => brackets += 1,
+            ']' => brackets = brackets.saturating_sub(1),
+            '{' => braces += 1,
+            '}' => braces = braces.saturating_sub(1),
+            ';' if parentheses == 0 && brackets == 0 && braces == 0 => boundaries.push(offset),
+            _ => {}
+        }
+    }
+    if boundaries.is_empty() {
+        return vec![normalize_text(value)];
+    }
+    let mut segments = Vec::with_capacity(boundaries.len() + 1);
+    let mut start = 0;
+    for boundary in boundaries {
+        let segment = normalize_text(&value[start..boundary]);
+        if !segment.is_empty() {
+            segments.push(segment);
+        }
+        start = boundary + ';'.len_utf8();
+    }
+    let final_segment = normalize_text(&value[start..]);
+    if !final_segment.is_empty() {
+        segments.push(final_segment);
+    }
+    if segments.len() < 2
+        || segments
+            .iter()
+            .skip(1)
+            .any(|segment| is_dependent_continuation(segment))
+    {
+        vec![normalize_text(value)]
+    } else {
+        segments
+    }
+}
+
+/// Avoids treating apostrophes in contractions as quotation delimiters.
+fn begins_ascii_single_quote(value: &str, offset: usize) -> bool {
+    let boundary = value[..offset].chars().next_back().is_none_or(|character| {
+        character.is_whitespace() || matches!(character, '(' | '[' | '{' | ':' | ';' | ',')
+    });
+    boundary && value[offset + '\''.len_utf8()..].contains('\'')
+}
+
+/// Recognizes prose that continues an earlier gloss rather than naming another one.
+fn is_dependent_continuation(value: &str) -> bool {
+    let lower = value.trim_start().to_ascii_lowercase();
+    lower.starts_with(['(', '[', '{', ',', ':', '—', '–', '-'])
+        || [
+            "and ",
+            "or ",
+            "but ",
+            "also ",
+            "especially ",
+            "particularly ",
+            "chiefly ",
+            "usually ",
+            "often ",
+            "for ",
+            "with ",
+            "without ",
+            "by ",
+            "in ",
+            "on ",
+            "at ",
+            "from ",
+            "as ",
+            "when ",
+            "where ",
+            "which ",
+            "who ",
+            "that ",
+            "while ",
+            "if ",
+            "although ",
+            "including ",
+            "such as ",
+            "e.g.",
+            "i.e.",
+            "etc.",
+        ]
+        .iter()
+        .any(|prefix| lower.starts_with(prefix))
 }
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -775,7 +1040,7 @@ mod tests {
     }
 
     #[test]
-    fn preserves_wiktionary_semicolons_inside_one_leaf_gloss() {
+    fn splits_standalone_wiktionary_gloss_alternatives() {
         let json = entry_json(
             r#"[{"glosses":["quality","perfect; excellent; flawless"]}]"#,
             r#"[{"zh_pron":"yuánmǎn","tags":["Mandarin","Pinyin"]}]"#,
@@ -783,10 +1048,70 @@ mod tests {
         let wrapper: Wrapper = serde_json::from_str(&json).unwrap();
         let record = parse_entry(wrapper.raw, 7, &mut SourceReport::default()).unwrap();
 
-        assert_eq!(record.definitions.len(), 1);
+        assert_eq!(record.definitions.len(), 3);
+        assert_eq!(
+            record
+                .definitions
+                .iter()
+                .map(|definition| definition.gloss.value.as_str())
+                .collect::<Vec<_>>(),
+            vec!["perfect", "excellent", "flawless"]
+        );
+    }
+
+    #[test]
+    fn extracts_classifier_references_and_preserves_malformed_prose() {
+        let valid = entry_json(
+            r#"[{"glosses":["bacterium; germ (Classifier: 種／种 m c; 樖 c)"]}]"#,
+            r#"[{"zh_pron":"xìjūn","tags":["Mandarin","Pinyin"]}]"#,
+        );
+        let wrapper: Wrapper = serde_json::from_str(&valid).unwrap();
+        let record = parse_entry(wrapper.raw, 7, &mut SourceReport::default()).unwrap();
+        assert_eq!(record.definitions.len(), 2);
+        assert!(
+            record
+                .definitions
+                .iter()
+                .all(|definition| definition.measure_words.is_empty())
+        );
+        assert_eq!(record.measure_words.len(), 2);
+        let first = &record.measure_words[0].value;
+        assert_eq!(first.traditional, "種");
+        assert_eq!(first.simplified, "种");
+        assert_eq!(first.lexical_id, None);
+        assert_eq!(
+            first.varieties,
+            vec![ChineseVariety::Mandarin, ChineseVariety::Cantonese]
+        );
+        assert_eq!(
+            record.measure_words[1].value.varieties,
+            vec![ChineseVariety::Cantonese]
+        );
+
+        let malformed = entry_json(
+            r#"[{"glosses":["thing (Classifier: 樖 c mystery)"]}]"#,
+            r#"[{"zh_pron":"yānhuǒ","tags":["Mandarin","Pinyin"]}]"#,
+        );
+        let wrapper: Wrapper = serde_json::from_str(&malformed).unwrap();
+        let mut report = SourceReport::default();
+        let record = parse_entry(wrapper.raw, 7, &mut report).unwrap();
         assert_eq!(
             record.definitions[0].gloss.value,
-            "perfect; excellent; flawless"
+            "thing (Classifier: 樖 c mystery)"
+        );
+        assert!(record.definitions[0].measure_words.is_empty());
+        assert_eq!(report.diagnostics["malformed-classifier-annotation"], 1);
+    }
+
+    #[test]
+    fn preserves_nested_quoted_and_dependent_semicolon_prose() {
+        assert_eq!(
+            split_standalone_glosses("a (b; c); d [e; f]; \"g; h\"; 'j; k'"),
+            vec!["a (b; c)", "d [e; f]", "\"g; h\"", "'j; k'"]
+        );
+        assert_eq!(
+            split_standalone_glosses("to march; especially in a procession"),
+            vec!["to march; especially in a procession"]
         );
     }
 

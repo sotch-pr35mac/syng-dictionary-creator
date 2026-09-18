@@ -5,7 +5,9 @@ mod chinese_notes;
 mod wiktionary;
 
 use crate::lock::{LockedArtifactSource, SourceLock};
-use crate::model::{AlternativePronunciation, Definition, LexicalId, Pinyin, Source, Sourced};
+use crate::model::{
+    AlternativePronunciation, Definition, MeasureWordReference, Pinyin, Source, Sourced,
+};
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -31,7 +33,7 @@ pub(crate) struct ParsedRecord {
     pub pronunciations: Vec<ParsedPronunciation>,
     pub definitions: Vec<Definition>,
     pub alternative_pronunciations: Vec<Sourced<AlternativePronunciation>>,
-    pub measure_words: Vec<Sourced<LexicalId>>,
+    pub measure_words: Vec<Sourced<MeasureWordReference>>,
     pub rejection: Option<String>,
 }
 

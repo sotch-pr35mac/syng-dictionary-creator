@@ -56,6 +56,13 @@ struct Sourced<T> {
     sources: Vec<Source>,
 }
 
+struct MeasureWordReference {
+    traditional: String,
+    simplified: String,
+    lexical_id: Option<LexicalId>,
+    varieties: Vec<ChineseVariety>,
+}
+
 struct AlternativePronunciation {
     pronunciation: Pinyin,
     label: String,
@@ -75,7 +82,7 @@ struct Definition {
     lexical_kinds: Vec<Sourced<LexicalKind>>,
     parts_of_speech: Vec<Sourced<PartOfSpeech>>,
     alternative_pronunciations: Vec<Sourced<AlternativePronunciation>>,
-    measure_words: Vec<Sourced<LexicalId>>,
+    measure_words: Vec<Sourced<MeasureWordReference>>,
 }
 
 struct LexicalUnit {
@@ -85,7 +92,7 @@ struct LexicalUnit {
     pinyin: Pinyin,
     commonness: f32,
     alternative_pronunciations: Vec<Sourced<AlternativePronunciation>>,
-    measure_words: Vec<Sourced<LexicalId>>,
+    measure_words: Vec<Sourced<MeasureWordReference>>,
     hsk: HskLevels,
     english: Vec<Definition>,
 }
@@ -93,11 +100,11 @@ struct LexicalUnit {
 
 Vectors are always present, including when empty. `commonness` is a finite, nonnegative ranking prior rather than a vocabulary filter; zero means the identity was unseen in the configured frequency corpora. Source-native IDs, parser records, raw rows, and unbounded source payloads are build-time data and are not serialized into a `LexicalUnit`.
 
-Standalone classifiers and alternate pronunciations stay at lexical-unit scope. Inline/sense-specific values stay on their definition. Alternative-pronunciation evidence is retained even when another lexical identity uses the same pronunciation; the two assertions have different learner-facing purposes.
+Standalone classifiers and alternate pronunciations stay at lexical-unit scope. Inline/sense-specific values stay on their definition. A classifier reference preserves its Chinese forms and reviewed variety labels; it has a lexical ID only when those exact forms identify one current lexical unit. Alternative-pronunciation evidence is retained even when another lexical identity uses the same pronunciation; the two assertions have different learner-facing purposes.
 
 CC-CEDICT establishes the initial identity set. Slash and semicolon separators produce ordered definition entries. Only closed, reviewed parenthetical labels such as `(idiom)` are converted to structured metadata; unrecognized parentheticals remain literal gloss text.
 
-Wiktionary may establish an exact single-pronunciation identity. A multi-pronunciation Wiktionary record enriches one CC-CEDICT identity only when the same written forms and CC-CEDICT primary/alternative pronunciation evidence identify one owner. Distinct single-pronunciation records remain distinct identities. Simplified and traditional examples are paired within one sense using exact English text and converter-derived script keys; ambiguous conversion classes remain separate. Every accepted example publishes both script forms: source-attested text is preserved, and a missing counterpart is generated with the pinned character converter for display fallback.
+Wiktionary may establish an exact single-pronunciation identity. A multi-pronunciation Wiktionary record enriches one CC-CEDICT identity only when the same written forms and CC-CEDICT primary/alternative pronunciation evidence identify one owner. Distinct single-pronunciation records remain distinct identities. Standard terminal `Classifier:` annotations are structured and removed from their glosses. Remaining top-level semicolon alternatives become separate glosses unless nesting, quotations, or dependent continuation prose makes the semicolon literal. Simplified and traditional examples are paired within one sense using exact English text and converter-derived script keys; ambiguous conversion classes remain separate. Every accepted example publishes both script forms: source-attested text is preserved, and a missing counterpart is generated with the pinned character converter for display fallback.
 
 Chinese Notes is enrichment-only. It cannot establish lexical identities or publish glosses. A row must exactly match a complete identity and an existing gloss before its whitelisted part-of-speech, lexical-kind, and domain metadata can be attached. The `\N` traditional sentinel remains incomplete for matching and is not inferred.
 

@@ -6,7 +6,9 @@ use crate::dictionary_archive::{
 };
 use crate::english::{self, EnglishSearchReport};
 use crate::lock::{LockedArtifactSource, SourceLock};
-use crate::model::{IDENTITY_VERSION, LexicalId, LexicalUnit, SCHEMA_VERSION, Sourced};
+use crate::model::{
+    IDENTITY_VERSION, LexicalId, LexicalUnit, MeasureWordReference, SCHEMA_VERSION, Sourced,
+};
 use crate::pinyin::from_numbered;
 use crate::sources::BuildReport;
 use anyhow::{Context, Result, bail};
@@ -794,17 +796,12 @@ pub fn validate_bundle(directory: &Path) -> Result<()> {
                 .iter()
                 .flat_map(|definition| &definition.measure_words),
         ) {
-            if archive
-                .identities
-                .get(measure_word.value.digest())
-                .is_none()
-            {
-                bail!(
-                    "unresolved classifier {} in {}",
-                    measure_word.value,
-                    unit.id
-                );
-            }
+            validate_measure_word_reference(
+                &measure_word.value,
+                &archive.identities,
+                &data,
+                &unit.id,
+            )?;
         }
     }
     validate_index_contents(
@@ -820,6 +817,42 @@ pub fn validate_bundle(directory: &Path) -> Result<()> {
         archive.pinyin_runtime_keys.as_slice(),
         &pinyin,
     )?;
+    Ok(())
+}
+
+/// Validates a classifier's display forms, reviewed labels, and optional lookup.
+fn validate_measure_word_reference(
+    reference: &MeasureWordReference,
+    identities: &rkyv::collections::swiss_table::ArchivedHashMap<[u8; 32], rkyv::Archived<u32>>,
+    units: &DataMap,
+    owner: &LexicalId,
+) -> Result<()> {
+    if crate::model::normalize_headword(&reference.traditional)? != reference.traditional
+        || crate::model::normalize_headword(&reference.simplified)? != reference.simplified
+    {
+        bail!("classifier reference has noncanonical forms in {owner}");
+    }
+    let mut varieties = BTreeSet::new();
+    if reference
+        .varieties
+        .iter()
+        .any(|variety| !varieties.insert(variety))
+    {
+        bail!("classifier reference has duplicate varieties in {owner}");
+    }
+    let Some(lexical_id) = &reference.lexical_id else {
+        return Ok(());
+    };
+    let runtime_key = identities
+        .get(lexical_id.digest())
+        .map(|value| value.to_native())
+        .with_context(|| format!("classifier identity {lexical_id} is absent from {owner}"))?;
+    let target = units
+        .get(&runtime_key)
+        .with_context(|| format!("classifier identity {lexical_id} has no runtime unit"))?;
+    if target.traditional != reference.traditional || target.simplified != reference.simplified {
+        bail!("classifier identity {lexical_id} does not match its reference forms in {owner}");
+    }
     Ok(())
 }
 

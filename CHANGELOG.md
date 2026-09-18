@@ -16,8 +16,6 @@
 - Retain multi-pronunciation Wiktionary evidence, pair deterministic
   simplified/traditional examples, and generate a missing script counterpart
   as a display fallback without replacing source-attested text.
-- Publish only the terminal Wiktextract gloss and remove the unused definition
-  context field.
 - Make Chinese Notes enrichment-only and report every suppressed match class.
 - Embed one document-normalized commonness score in every lexical unit from the
   locally generated `syng-word-frequency` database, using zero for unseen

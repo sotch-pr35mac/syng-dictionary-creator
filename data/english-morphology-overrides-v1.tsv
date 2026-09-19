@@ -1,0 +1,15 @@
+# revision: 1
+# operation	pos	lemma	surface
+add	verb	run	run
+add	verb	run	runs
+add	verb	run	running
+add	verb	run	ran
+add	verb	be	be
+add	verb	be	am
+add	verb	be	is
+add	verb	be	are
+add	verb	be	was
+add	verb	be	were
+add	verb	be	been
+add	verb	be	being
+remove	verb	be	bing

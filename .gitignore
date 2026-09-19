@@ -1,6 +1,8 @@
 .DS_Store
 /target/
+.cache/
 **/*.rs.bk
 cc-cedict.json
-/out/*.dictionary
-/out/*.fst
+/out/
+docs/english-search-architecture.md
+docs/source-decisions.md
